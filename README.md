@@ -16,6 +16,9 @@ import kombu_pyamqp_threadsafe
 kombu_pyamqp_threadsafe.monkeypatch_pyamqp_transport()  # patch exists transports: 'pyamqp://', 'amqp://', 'amqps://'
 # ... or
 kombu_pyamqp_threadsafe.add_shared_amqp_transport()  # explicit use 'shared+pyamqp://', 'shared+amqp://' or 'shared+amqps://' transports 
+
+# Transport not enough and you need thread-safe kombu.Connection variant: 
+connection = kombu_pyamqp_threadsafe.KombuConnection(...)
 ```
 
 ## Motivation
