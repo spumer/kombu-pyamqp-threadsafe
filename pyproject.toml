@@ -74,7 +74,12 @@ target-version = "py38"
 [tool.ruff.lint]
 ignore-init-module-imports = true
 select = ["A", "ASYNC", "B", "C4", "C90", "D", "DTZ", "E", "F", "FLY", "FURB", "I", "ISC", "LOG", "N", "NPY", "PERF", "PGH", "PIE", "PL", "PT", "Q", "RET", "RUF", "RSE", "SIM", "TID", "UP", "W", "YTT"]
-ignore = ["D203", "D213", "E501", "PGH002", "PGH003", "RET504", "S101", "S307"]
+ignore = [
+  "D203", "D213", "E501", "PGH002", "PGH003", "RET504", "S101", "S307",
+  "D101",  # missing docstring in public class
+  "D107",  # missing docstring in public method
+  "D102",  # missing docstring in public method
+]
 unfixable = ["F401", "F841"]
 
 [tool.ruff.lint.flake8-tidy-imports]

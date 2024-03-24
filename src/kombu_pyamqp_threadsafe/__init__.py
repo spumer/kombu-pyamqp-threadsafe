@@ -1,3 +1,13 @@
+"""Threadsafe implementation of pyamqp transport for kombu.
+
+import kombu_pyamqp_threadsafe
+# ... and then
+kombu_pyamqp_threadsafe.monkeypatch_pyamqp_transport()  # patch exists transports: 'pyamqp://', 'amqp://', 'amqps://'
+# ... or
+kombu_pyamqp_threadsafe.add_shared_amqp_transport()  # explicit use 'shared+pyamqp://', 'shared+amqp://' or 'shared+amqps://' transports
+
+"""
+
 import collections
 import contextlib
 import functools
@@ -7,9 +17,9 @@ import threading
 
 import amqp
 import kombu
+import kombu.connection
 import kombu.resource
 import kombu.simple
-import kombu.connection
 import kombu.transport
 import kombu.transport.pyamqp
 from amqp import RecoverableConnectionError
@@ -54,9 +64,9 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         except AttributeError as exc:
             if (
                 not self.connection
-                and "AttributeError: 'NoneType' object has no attribute 'drain_events'" == str(exc)
+                and str(exc) == "AttributeError: 'NoneType' object has no attribute 'drain_events'"
             ):
-                raise RecoverableConnectionError("connection already closed")
+                raise RecoverableConnectionError("connection already closed") from None
 
     def collect(self):
         conn = self.connection
@@ -67,10 +77,8 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
             )
 
         bindings = conn.channel_thread_bindings.get(self._owner_ident) or []
-        try:
+        with contextlib.suppress(ValueError):
             bindings.remove(self.channel_id)
-        except ValueError:
-            pass
 
         super().collect()
 
@@ -191,7 +199,7 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
             with self._transport_lock:
                 transport = self._transport
                 if transport is None or not transport.connected:
-                    raise IOError("Socket closed")
+                    raise OSError("Socket closed")
                 res = frame_writer(*args, **kwargs)
             return res
 
@@ -230,7 +238,7 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
 
 
 class KombuConnection(kombu.Connection):
-    """Thread-safe variant of kombu.Connection"""
+    """Thread-safe variant of kombu.Connection."""
 
     def __init__(self, *args, default_channel_pool_size=100, **kwargs):
         self._transport_lock = threading.RLock()
@@ -275,7 +283,7 @@ class KombuConnection(kombu.Connection):
                     self._default_channel_pool = pool
         return pool
 
-    def ChannelPool(self, limit=None, **kwargs):
+    def ChannelPool(self, limit=None, **kwargs):  # noqa: N802
         return ChannelPool(self, limit, **kwargs)
 
     def _do_close_self(self):
@@ -322,18 +330,16 @@ class SharedPyamqpSSLTransport(kombu.transport.pyamqp.SSLTransport):
 
 
 def monkeypatch_pyamqp_transport():
-    """Replace default implementation by thread-safe
-    """
+    """Replace default implementation by thread-safe."""
     kombu.transport.pyamqp.Transport.Connection = ThreadSafeConnection
     kombu.transport.pyamqp.SSLTransport.Connection = ThreadSafeConnection
 
 
 def add_shared_amqp_transport():
-    """Register threadsafe transports in kombu
+    """Register threadsafe transports in kombu.
 
     shared+pyamqp, shared+amqp, shared+amqps
     """
-
     kombu.transport.TRANSPORT_ALIASES["shared+pyamqp"] = (
         f"{SharedPyamqpTransport.__module__}:{SharedPyamqpTransport.__name__}"
     )
