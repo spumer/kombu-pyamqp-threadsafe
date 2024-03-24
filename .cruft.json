@@ -1,0 +1,32 @@
+{
+  "template": "https://github.com/radix-ai/poetry-cookiecutter",
+  "commit": "4127874124193c60cd5e2bfaa025473b8f30411f",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "package_name": "kombu-pyamqp-threadsafe",
+      "package_description": "Threadsafe implementation of pyamqp transport for kombu",
+      "package_url": "https://github.com/spumer/kombu-pyamqp-threadsafe",
+      "author_name": "spumer",
+      "author_email": "john@example.com",
+      "python_version": "3.8",
+      "docker_image": "python:$PYTHON_VERSION-slim",
+      "development_environment": "simple",
+      "with_conventional_commits": "1",
+      "with_fastapi_api": "0",
+      "with_jupyter_lab": "0",
+      "with_pydantic_typing": "0",
+      "with_sentry_logging": "0",
+      "with_streamlit_app": "0",
+      "with_typer_cli": "0",
+      "continuous_integration": "GitHub",
+      "docstring_style": "Google",
+      "private_package_repository_name": "",
+      "private_package_repository_url": "",
+      "__package_name_kebab_case": "kombu-pyamqp-threadsafe",
+      "__package_name_snake_case": "kombu_pyamqp_threadsafe",
+      "_template": "https://github.com/radix-ai/poetry-cookiecutter"
+    }
+  },
+  "directory": null
+}
