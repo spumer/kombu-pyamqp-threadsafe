@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]  # https://python-poetry.org/docs/pyproject/
 name = "kombu-pyamqp-threadsafe"
-version = "0.1.0"
+version = "0.2.0"
 description = "Threadsafe implementation of pyamqp transport for kombu"
 authors = ["spumer <john@example.com>"]
 readme = "README.md"
