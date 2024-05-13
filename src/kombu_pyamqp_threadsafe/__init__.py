@@ -246,6 +246,15 @@ class KombuConnection(kombu.Connection):
         self._default_channel_pool_size = default_channel_pool_size
         super().__init__(*args, **kwargs)
 
+    def get_transport_cls(self):
+        transport_cls = super().get_transport_cls()
+        if isinstance(transport_cls, kombu.transport.pyamqp.Transport):
+            transport_cls = SharedPyamqpTransport
+        if isinstance(transport_cls, kombu.transport.pyamqp.SSLTransport):
+            transport_cls = SharedPyamqpSSLTransport
+
+        return transport_cls
+
     @property
     def transport(self):
         if self._transport is None:
@@ -256,6 +265,10 @@ class KombuConnection(kombu.Connection):
 
     @property
     def connected(self):
+        """Check connection
+
+        Except basic implementation we make real check: try read from socket
+        """
         with self._transport_lock:
             connected = (
                 not self._closed
