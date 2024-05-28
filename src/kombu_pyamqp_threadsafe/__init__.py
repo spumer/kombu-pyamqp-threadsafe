@@ -1,12 +1,4 @@
-"""Threadsafe implementation of pyamqp transport for kombu.
-
-import kombu_pyamqp_threadsafe
-# ... and then
-kombu_pyamqp_threadsafe.monkeypatch_pyamqp_transport()  # patch exists transports: 'pyamqp://', 'amqp://', 'amqps://'
-# ... or
-kombu_pyamqp_threadsafe.add_shared_amqp_transport()  # explicit use 'shared+pyamqp://', 'shared+amqp://' or 'shared+amqps://' transports
-
-"""
+"""Threadsafe implementation of pyamqp transport for kombu."""
 
 import collections
 import contextlib
@@ -14,6 +6,7 @@ import functools
 import logging
 import socket
 import threading
+import weakref
 
 import amqp
 import kombu
@@ -27,15 +20,34 @@ from amqp import RecoverableConnectionError
 logger = logging.getLogger(__name__)
 
 
-class ChannelPool(kombu.connection.ChannelPool):
+
+class ThreadSafeChannelPool(kombu.connection.ChannelPool):
     def __init__(self, connection, limit=None, **kwargs):
-        assert isinstance(connection, ThreadSafeConnection)
+        assert isinstance(
+            connection, KombuConnection
+        ), f"Expect {KombuConnection.__qualname__}, given: {type(connection)}"
         super().__init__(connection, limit=limit, **kwargs)
 
-    def acquire(self, *args, **kwargs):
+    def acquire(self, *args, **kwargs) -> "ThreadSafeChannel":
         channel: ThreadSafeChannel = super().acquire(*args, **kwargs)
         channel.change_owner(threading.get_ident())
         return channel
+
+    def prepare(self, channel: "ThreadSafeChannel") -> "ThreadSafeChannel":
+        channel = super().prepare(channel)
+        channel._bind_to_pool(self)
+        return channel
+
+    def release_resource(self, resource: "ThreadSafeChannel"):
+        if resource.connection is None or not resource.is_open or resource.is_closing:
+            if self.limit:
+                self._dirty.discard(resource)
+            return
+
+        super().release_resource(resource)
+
+
+ChannelPool = ThreadSafeChannelPool
 
 
 class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
@@ -44,7 +56,17 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._owner_ident = threading.get_ident()
+        self._channel_pool: weakref.ReferenceType[ThreadSafeChannel] | None = None
         self.connection.channel_thread_bindings[self._owner_ident].append(self.channel_id)
+
+    def _bind_to_pool(self, channel_pool: "ThreadSafeChannelPool"):
+        self._channel_pool = weakref.ref(channel_pool)
+
+    @property
+    def channel_pool(self) -> ThreadSafeChannelPool | None:
+        if self._channel_pool is None:
+            return None
+        return self._channel_pool()
 
     def change_owner(self, new_owner):
         prev_owner = self._owner_ident
@@ -82,12 +104,26 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
 
         super().collect()
 
+    def close(self, *args, **kwargs):
+        """Close channel and mark it as released in parent ChannelPool."""
+        pool = self.channel_pool
+        if pool is not None:
+            pool.release_resource(self)
+        super().close(*args, **kwargs)
+
+    def release(self):
+        # ChannelPool replace this method by own
+        self.close()
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Return channel to ChannelPool, if it's acquired before, otherwise it will be closed."""
+        self.release()
+
 
 class DrainGuard:
     def __init__(self):
         self._drain_cond = threading.Condition()
         self._drain_is_active_by = None
-        self._drain_check_lock = threading.RLock()
 
     def is_drain_active(self):
         return self._drain_is_active_by is not None
@@ -214,8 +250,9 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
             super().collect()
 
     def drain_events(self, timeout=None):
-        # When all threads go here only one really drain events
-        # Because this action independent of caller, all events will be dispatched to their channels
+        # When all threads go here only one really drain events,
+        # because this action independent of caller.
+        # All events will be dispatched to their channels
 
         started = self._drain_guard.start_drain()
 
@@ -292,12 +329,15 @@ class KombuConnection(kombu.Connection):
             with self._transport_lock:
                 pool = self._default_channel_pool
                 if pool is None:
+                    conn_opts = self._extract_failover_opts()
+                    self._ensure_connection(**conn_opts)
+
                     pool = self.ChannelPool(limit=self._default_channel_pool_size)
                     self._default_channel_pool = pool
         return pool
 
     def ChannelPool(self, limit=None, **kwargs):  # noqa: N802
-        return ChannelPool(self, limit, **kwargs)
+        return ThreadSafeChannelPool(self, limit, **kwargs)
 
     def _do_close_self(self):
         pool = self._default_channel_pool
