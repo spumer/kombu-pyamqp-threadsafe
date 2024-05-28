@@ -4,8 +4,10 @@ import collections
 import contextlib
 import functools
 import logging
+import os
 import socket
 import threading
+import time
 import weakref
 
 import amqp
@@ -19,6 +21,7 @@ from amqp import RecoverableConnectionError
 
 logger = logging.getLogger(__name__)
 
+DEBUG = os.getenv("KOMBU_PYAMQP_THREADSAFE_DEBUG", "0").lower() in ("1", "true", "t", "y", "yes")
 
 
 class ThreadSafeChannelPool(kombu.connection.ChannelPool):
@@ -122,7 +125,15 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
 
 class DrainGuard:
     def __init__(self):
-        self._drain_cond = threading.Condition()
+        cond_lock = threading.RLock()
+        check_lock = threading.RLock()
+
+        if DEBUG:
+            cond_lock = LoggingLock(cond_lock, "DrainGuard-ConditionRLock")
+            check_lock = LoggingLock(threading.RLock(), "DrainGuard-CheckRLock")
+
+        self._drain_cond = threading.Condition(lock=cond_lock)
+        self._drain_check_lock = check_lock
         self._drain_is_active_by = None
 
     def is_drain_active(self):
@@ -274,11 +285,80 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
             self._dispatch_channel_frames(channel_id)
 
 
+class LoggingLock:
+    def __init__(self, lock, name=None, threshold=0.01):
+        if hasattr(lock, "_release_save"):
+            self._release_save = lock._release_save
+        if hasattr(lock, "_acquire_restore"):
+            self._acquire_restore = lock._acquire_restore
+        if hasattr(lock, "_is_owned"):
+            self._is_owned = lock._is_owned
+
+        self.owner = None
+        self.lock = lock
+        self.name = name or repr(lock)
+        self.threshold = threshold
+        self._acquired_at = 0
+
+        logger.info("Lock(%s): created by %s", self.name, threading.get_ident())
+
+    def acquire(self, blocking=True, timeout=-1):
+        start = time.monotonic()
+        if not self.threshold:
+            logger.info("Lock(%s): try to acquire", self.name)
+
+        res = self.lock.acquire(blocking, timeout)
+        self.owner = threading.get_ident()
+
+        acquired = time.monotonic()
+        stuck = ""
+        if acquired - start > self.threshold:
+            stuck = "STUCK"
+
+        logger.info("Lock(%s): acquired; %.2fs" + stuck, self.name, acquired - start)
+
+        self._acquired_at = acquired
+
+        return res
+
+    def release(self):
+        res = self.lock.release()
+        logger.info("Lock(%s): released", self.name)
+        return res
+
+    def __enter__(self):
+        """Acquire lock."""
+        start = time.monotonic()
+        logger.info("Lock(%s): try to acquire", self.name)
+
+        res = self.lock.__enter__()
+
+        acquired = time.monotonic()
+        stuck = ""
+        if acquired - start > self.threshold:
+            stuck = "STUCK"
+        logger.info("Lock(%s): acquired; %.2fs" + stuck, self.name, acquired - start)
+
+        return res
+
+    def __exit__(self, *args, **kwargs):
+        """Release lock."""
+        try:
+            return self.lock.__exit__(*args, **kwargs)
+        finally:
+            logger.info("Lock(%s): released", self.name)
+
+
 class KombuConnection(kombu.Connection):
     """Thread-safe variant of kombu.Connection."""
 
     def __init__(self, *args, default_channel_pool_size=100, **kwargs):
-        self._transport_lock = threading.RLock()
+        transport_lock = threading.RLock()
+
+        if DEBUG:
+            transport_lock = LoggingLock(transport_lock, name="TransportLock")
+
+        self._transport_lock = transport_lock
         self._default_channel_pool: kombu.resource.Resource | None = None
         self._default_channel_pool_size = default_channel_pool_size
         super().__init__(*args, **kwargs)
