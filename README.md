@@ -11,14 +11,15 @@ kombu (pyamqp) designed as "1 thread = 1 connection", no connection sharing betw
 This package make possible design "1 thread = 1 channel", **allow** connection sharing between threads
 
 ```python
+import kombu
 import kombu_pyamqp_threadsafe
-# ... and then
-kombu_pyamqp_threadsafe.monkeypatch_pyamqp_transport()  # patch exists transports: 'pyamqp://', 'amqp://', 'amqps://'
-# ... or
-kombu_pyamqp_threadsafe.add_shared_amqp_transport()  # explicit use 'shared+pyamqp://', 'shared+amqp://' or 'shared+amqps://' transports 
 
-# Transport not enough and you need thread-safe kombu.Connection variant: 
+# Use drop-in replacement thread-safe kombu.Connection variant: 
 connection = kombu_pyamqp_threadsafe.KombuConnection(...)
+
+# or construct from kombu.Connection
+kombu_connection = kombu.Connection(...)
+kombu_pyamqp_threadsafe.KombuConnection.from_kombu_connection(kombu_connection)
 ```
 
 ## Motivation

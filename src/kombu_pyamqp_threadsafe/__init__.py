@@ -363,6 +363,12 @@ class KombuConnection(kombu.Connection):
         self._default_channel_pool_size = default_channel_pool_size
         super().__init__(*args, **kwargs)
 
+    @classmethod
+    def from_kombu_connection(cls, connection: kombu.Connection, **kwargs) -> "KombuConnection":
+        """Clone kombu.Connection as new KombuConnection instance."""
+        # implementation copied from `kombu.Connection.clone()` method
+        return cls(**dict(connection._info(resolve=False)), **kwargs)
+
     def get_transport_cls(self):
         transport_cls = super().get_transport_cls()
         if isinstance(transport_cls, kombu.transport.pyamqp.Transport):
