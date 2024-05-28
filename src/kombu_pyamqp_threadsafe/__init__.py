@@ -371,10 +371,20 @@ class KombuConnection(kombu.Connection):
 
     def get_transport_cls(self):
         transport_cls = super().get_transport_cls()
-        if isinstance(transport_cls, kombu.transport.pyamqp.Transport):
-            transport_cls = SharedPyamqpTransport
-        if isinstance(transport_cls, kombu.transport.pyamqp.SSLTransport):
+
+        if isinstance(transport_cls, (SharedPyamqpTransport, SharedPyamqpSSLTransport)):
+            return transport_cls
+
+        if transport_cls is kombu.transport.pyamqp.SSLTransport:
             transport_cls = SharedPyamqpSSLTransport
+
+        elif transport_cls is kombu.transport.pyamqp.Transport:
+            transport_cls = SharedPyamqpTransport
+
+        else:
+            raise RuntimeError(
+                f"Unsupported transport type: {transport_cls}; Only py-amqp supported"
+            )
 
         return transport_cls
 
@@ -388,7 +398,7 @@ class KombuConnection(kombu.Connection):
 
     @property
     def connected(self):
-        """Check connection
+        """Check connection.
 
         Except basic implementation we make real check: try read from socket
         """
