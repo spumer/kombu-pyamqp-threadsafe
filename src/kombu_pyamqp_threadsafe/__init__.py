@@ -18,6 +18,7 @@ import kombu.simple
 import kombu.transport
 import kombu.transport.pyamqp
 from amqp import RecoverableConnectionError
+from kombu.transport.virtual import Channel
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         self._channel_pool = weakref.ref(channel_pool)
 
     @property
-    def channel_pool(self) -> ThreadSafeChannelPool | None:
+    def channel_pool(self) -> "ThreadSafeChannelPool | None":
         if self._channel_pool is None:
             return None
         return self._channel_pool()
@@ -352,6 +353,11 @@ class LoggingLock:
 class KombuConnection(kombu.Connection):
     """Thread-safe variant of kombu.Connection."""
 
+    # TODO: ensure only one thread make action (add threading.Condition) for:
+    #   _ensure_connection, _close, collect
+
+    _default_channel: "ThreadSafeChannel | None" = None
+
     def __init__(self, *args, default_channel_pool_size=100, **kwargs):
         transport_lock = threading.RLock()
 
@@ -359,7 +365,7 @@ class KombuConnection(kombu.Connection):
             transport_lock = LoggingLock(transport_lock, name="TransportLock")
 
         self._transport_lock = transport_lock
-        self._default_channel_pool: kombu.resource.Resource | None = None
+        self._default_channel_pool: ThreadSafeChannelPool | None = None
         self._default_channel_pool_size = default_channel_pool_size
         super().__init__(*args, **kwargs)
 
@@ -419,7 +425,23 @@ class KombuConnection(kombu.Connection):
         return connected
 
     @property
-    def default_channel_pool(self):
+    def default_channel(self) -> ThreadSafeChannel:
+        channel = self._default_channel
+
+        if channel is None:
+            with self._transport_lock:
+                channel = self._default_channel
+                if channel is None:
+                    conn_opts = self._extract_failover_opts()
+                    self._ensure_connection(**conn_opts)
+
+                    channel = self.channel()
+                    self._default_channel = channel
+
+        return channel
+
+    @property
+    def default_channel_pool(self) -> ThreadSafeChannelPool:
         pool = self._default_channel_pool
         if pool is None:
             with self._transport_lock:
@@ -441,12 +463,14 @@ class KombuConnection(kombu.Connection):
             pool.force_close_all()
         self._default_channel_pool = None
         super()._do_close_self()
+        self._default_channel = None
 
     def _close(self):
         with self._transport_lock:
             super()._close()
 
     def _ensure_connection(self, *args, **kwargs):
+        # TODO: respect `_extract_failover_opts()`
         with self._transport_lock:
             return super()._ensure_connection(*args, **kwargs)
 
