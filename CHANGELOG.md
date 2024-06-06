@@ -1,3 +1,16 @@
+## v0.3.0 (2024-06-06)
+
+### Feat
+
+- KombuConnection.default_channel now threadsafe
+- new method KombuConnection.from_kombu_connection() to recreate thread-safe KombuConnection from already exists kombu.Connection
+- add env KOMBU_PYAMQP_THREADSAFE_DEBUG to logging more details about locks; maybe in feature added some other info
+
+### Fix
+
+- now KombuConnection correctly check internal transport when replace it via thread-safe variant (previously it's always raise error)
+- now KombuConnection.default_channel_pool allow return channel to pool back if it reusable; ensure connection is connected when create pool
+
 ## v0.2.0 (2024-05-13)
 
 ### Feat
