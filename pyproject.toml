@@ -52,6 +52,7 @@ source = ["src"]
 output = "reports/coverage.xml"
 
 [tool.mypy]  # https://mypy.readthedocs.io/en/latest/config_file.html
+python_version = "3.8"
 junit_xml = "reports/mypy.xml"
 ignore_missing_imports = true
 pretty = true
