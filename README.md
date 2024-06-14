@@ -53,7 +53,8 @@ Use same channel to consume from all queues
 **A:** Yes, it's production ready. We also make stress-test with 900 threads, when run 900 dramatiq actors which consume message and send new one to queue. Only 2 connections used.
 
 **Q:** Dramatiq?
-**A:** Yes, dramatiq-kombu-broker will be released soon :)
+
+**A:** Yes, just use [dramatiq-kombu-broker](https://github.com/spumer/dramatiq-kombu-broker/)
 
 ### Rules
 
