@@ -1,3 +1,9 @@
+## v0.3.1 (2024-09-12)
+
+### Fix
+
+- **ChannelPool**: ignore closed channel when release
+
 ## v0.3.0 (2024-06-06)
 
 ### Feat
