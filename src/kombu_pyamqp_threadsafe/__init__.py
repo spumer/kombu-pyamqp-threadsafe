@@ -42,13 +42,13 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
         channel._bind_to_pool(self)
         return channel
 
-    def release_resource(self, resource: "ThreadSafeChannel"):
+    def release(self, resource: "ThreadSafeChannel"):
         if resource.connection is None or not resource.is_open or resource.is_closing:
             if self.limit:
                 self._dirty.discard(resource)
             return
 
-        super().release_resource(resource)
+        super().release(resource)
 
 
 ChannelPool = ThreadSafeChannelPool
