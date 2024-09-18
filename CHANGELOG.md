@@ -1,3 +1,10 @@
+## v0.4.0 (2024-09-18)
+
+### Feat
+
+- **ChannelPool**: more robust KombuConnection.default_channel_pool recreation
+- **ChannelPool**: ThreadSafeChannel.close()  first try return channel to pool instead closing, .force_close() method added to close in any way;
+
 ## v0.3.1 (2024-09-12)
 
 ### Fix
