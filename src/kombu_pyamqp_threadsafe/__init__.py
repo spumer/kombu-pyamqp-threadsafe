@@ -31,6 +31,10 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
         ), f"Expect {KombuConnection.__qualname__}, given: {type(connection)}"
         super().__init__(connection, limit=limit, **kwargs)
 
+    @property
+    def closed(self) -> bool:
+        return self._closed or self.connection is None
+
     def setup(self):
         # do not pre-create channels like parent implementation
         pass
@@ -453,15 +457,20 @@ class KombuConnection(kombu.Connection):
     @property
     def default_channel_pool(self) -> ThreadSafeChannelPool:
         pool = self._default_channel_pool
-        if pool is None:
+        if pool is None or pool.closed:
             with self._transport_lock:
                 pool = self._default_channel_pool
-                if pool is None:
+                if pool is None or pool.closed:
                     conn_opts = self._extract_failover_opts()
                     self._ensure_connection(**conn_opts)
 
                     pool = self.ChannelPool(limit=self._default_channel_pool_size)
                     self._default_channel_pool = pool
+
+        if pool is None:
+            # mypy typeguard
+            raise RuntimeError("Channel pool was not initialized properly")
+
         return pool
 
     def ChannelPool(self, limit=None, **kwargs):  # noqa: N802
