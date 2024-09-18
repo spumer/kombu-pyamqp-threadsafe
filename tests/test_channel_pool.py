@@ -1,3 +1,5 @@
+import contextlib
+
 import kombu.exceptions
 import pytest
 
@@ -12,11 +14,15 @@ def connection(rabbitmq_dsn):
     connection.close()
 
 
+@pytest.mark.parametrize(
+    "ctx_closing", [True, False], ids=["contextlib.closing", "ThreadsafeChannel.__enter__"]
+)
 def test__empty_pool__release__not_close(
     connection,
     get_kombu_resource_all_objects,
     get_kombu_resource_acquired_objects,
     get_kombu_resource_free_objects,
+    ctx_closing,
 ):
     """Test channel will be reused instead reopen (closing)"""
     assert not connection.connected
@@ -24,7 +30,11 @@ def test__empty_pool__release__not_close(
     pool_size = len(get_kombu_resource_all_objects(connection.default_channel_pool))
     assert pool_size == 0
 
-    with connection.default_channel_pool.acquire() as channel:
+    acquire_ctx = connection.default_channel_pool.acquire()
+    if ctx_closing:
+        acquire_ctx = contextlib.closing(acquire_ctx)
+
+    with acquire_ctx as channel:
         assert channel.is_open
         pool_free_size = len(get_kombu_resource_free_objects(connection.default_channel_pool))
         assert pool_free_size == 0
@@ -61,7 +71,7 @@ def test_channel_closed__release__drop(
 
     with connection.default_channel_pool.acquire() as channel:
         assert channel.is_open
-        channel.close()
+        channel.force_close()
 
     assert not channel.is_open
     assert connection.connected

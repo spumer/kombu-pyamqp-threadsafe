@@ -112,10 +112,17 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         super().collect()
 
     def close(self, *args, **kwargs):
-        """Close channel and mark it as released in parent ChannelPool."""
+        """Return a channel to pool if it's possible, otherwise close it"""
         pool = self.channel_pool
         if pool is not None:
-            pool.release_resource(self)
+            pool.release(self)
+        else:
+            super().close(*args, **kwargs)
+
+    def force_close(self, *args, **kwargs):
+        """Force close connection without pool interaction.
+        Behavior like common Channel.close()
+        """
         super().close(*args, **kwargs)
 
     def release(self):
