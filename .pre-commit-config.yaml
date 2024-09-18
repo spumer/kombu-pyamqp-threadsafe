@@ -58,13 +58,6 @@ repos:
         require_serial: true
         language: system
         types_or: [python, pyi]
-      - id: ruff-format
-        name: ruff format
-        entry: ruff format
-        args: [--force-exclude]
-        require_serial: true
-        language: system
-        types_or: [python, pyi]
       - id: poetry-check
         name: poetry check
         entry: poetry check

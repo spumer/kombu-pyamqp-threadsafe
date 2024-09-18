@@ -133,3 +133,17 @@ convention = "google"
 
     [[tool.poe.tasks.test.sequence]]
     cmd = "coverage xml"
+
+  [tool.poe.tasks.fmt]
+  help = "Code formatting"
+
+    [[tool.poe.tasks.fmt.sequence]]
+    cmd = """
+      ruff check
+      --force-exclude
+      --extend-fixable=F401,F841
+      --fix-only
+    """
+
+    [[tool.poe.tasks.fmt.sequence]]
+    cmd = "ruff format"
