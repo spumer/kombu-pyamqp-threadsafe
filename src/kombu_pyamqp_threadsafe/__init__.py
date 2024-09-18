@@ -18,7 +18,6 @@ import kombu.simple
 import kombu.transport
 import kombu.transport.pyamqp
 from amqp import RecoverableConnectionError
-from kombu.transport.virtual import Channel
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +31,12 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
         ), f"Expect {KombuConnection.__qualname__}, given: {type(connection)}"
         super().__init__(connection, limit=limit, **kwargs)
 
-    def acquire(self, *args, **kwargs) -> "ThreadSafeChannel":
-        channel: ThreadSafeChannel = super().acquire(*args, **kwargs)
+    def setup(self):
+        # do not pre-create channels like parent implementation
+        pass
+
+    def acquire(self, block: bool = False, timeout: "float | None" = None) -> "ThreadSafeChannel":
+        channel: ThreadSafeChannel = super().acquire(block=block, timeout=timeout)
         channel.change_owner(threading.get_ident())
         return channel
 
