@@ -1,3 +1,9 @@
+## v0.4.1 (2024-10-03)
+
+### Fix
+
+- **ChannelPool**: deadlock on ChannelPool.acquire(block=True) (regression at 41c7ac86eaad8b28b298900e5cc9619602552c7f)
+
 ## v0.4.0 (2024-09-18)
 
 ### Feat
