@@ -36,8 +36,11 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
         return self._closed or self.connection is None
 
     def setup(self):
-        # do not pre-create channels like parent implementation
-        pass
+        """Fill empty pool up to self.limit, if it's possible (limit is not None)"""
+        # kombu.Resource use Queue internal lock to sync threads when they acquire resource from pool.
+        # Instead, filling pool lazily when you need a new object kombu fill it on init.
+        # This prevents locking and simplifies pool internals, but expensive
+        super().setup()
 
     def acquire(self, block: bool = False, timeout: "float | None" = None) -> "ThreadSafeChannel":
         channel: ThreadSafeChannel = super().acquire(block=block, timeout=timeout)
