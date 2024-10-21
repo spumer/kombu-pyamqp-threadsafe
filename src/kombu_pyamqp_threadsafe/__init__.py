@@ -6,11 +6,13 @@ import functools
 import logging
 import os
 import socket
+import ssl
 import threading
 import time
 import weakref
 
 import amqp
+import amqp.transport
 import kombu
 import kombu.connection
 import kombu.resource
@@ -196,6 +198,8 @@ class DrainGuard:
 
 
 class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
+    _transport: amqp.transport.TCPTransport
+
     Channel = ThreadSafeChannel
 
     # The connection object itself is treated as channel 0
@@ -263,9 +267,20 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         def wrapper(*args, **kwargs):
             with self._transport_lock:
                 transport = self._transport
-                if transport is None or not transport.connected:
+
+                if transport is None:
                     raise OSError("Socket closed")
-                res = frame_writer(*args, **kwargs)
+
+                if not transport.connected:
+                    self.collect()
+                    raise OSError("Socket closed")
+
+                try:
+                    res = frame_writer(*args, **kwargs)
+                except (OSError, ssl.SSLError):
+                    self.collect()
+                    raise
+
             return res
 
         self._frame_writer = wrapper
@@ -449,10 +464,8 @@ class KombuConnection(kombu.Connection):
             with self._transport_lock:
                 channel = self._default_channel
                 if channel is None:
-                    conn_opts = self._extract_failover_opts()
-                    self._ensure_connection(**conn_opts)
-
-                    channel = self.channel()
+                    pool = self.default_channel_pool
+                    channel = pool.acquire()
                     self._default_channel = channel
 
         return channel
@@ -503,13 +516,15 @@ class KombuConnection(kombu.Connection):
     def _connection_factory(self):
         with self._transport_lock:
             connection = super()._connection_factory()
-            self._default_channel_pool = None
             return connection
 
-    def revive(self, new_channel):
+    def revive(self, new_channel: ThreadSafeChannel):
         with self._transport_lock:
             super().revive(new_channel)
-            self._default_channel_pool = None
+            channel_pool = new_channel.channel_pool
+            assert channel_pool is not None
+            if channel_pool is not self._default_channel_pool:
+                raise RuntimeError("Channel bound to different pool")
 
     def channel(self):
         with self._transport_lock:
