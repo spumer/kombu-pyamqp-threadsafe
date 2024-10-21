@@ -1,3 +1,9 @@
+## v0.4.2 (2024-10-21)
+
+### Fix
+
+- now connection can be restored after SSLError (details in full comment)
+
 ## v0.4.1 (2024-10-03)
 
 ### Fix
