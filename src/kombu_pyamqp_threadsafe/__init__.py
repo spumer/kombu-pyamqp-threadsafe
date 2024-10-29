@@ -9,6 +9,7 @@ import socket
 import ssl
 import threading
 import time
+import typing
 import weakref
 
 import amqp
@@ -20,6 +21,10 @@ import kombu.simple
 import kombu.transport
 import kombu.transport.pyamqp
 from amqp import RecoverableConnectionError
+
+if typing.TYPE_CHECKING:
+    from kombu.transport.virtual import Channel
+
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,13 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
     def acquire(self, block: bool = False, timeout: "float | None" = None) -> "ThreadSafeChannel":
         channel: ThreadSafeChannel = super().acquire(block=block, timeout=timeout)
         channel.change_owner(threading.get_ident())
+
+        # support ThreadSafeChannel interface
+        def release(close_unbound: bool = False):
+            self.release(channel)
+
+        channel.release = release  # type: ignore[assignment]
+
         return channel
 
     def prepare(self, channel: "ThreadSafeChannel") -> "ThreadSafeChannel":
@@ -157,9 +169,10 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         """
         super().close(*args, **kwargs)
 
-    def release(self):
+    def release(self, close_unbound: bool = False):
         # ChannelPool replace this method by own
-        self.close()
+        if close_unbound:
+            self.close()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Return channel to ChannelPool, if it's acquired before, otherwise it will be closed."""
@@ -429,6 +442,44 @@ class KombuConnection(kombu.Connection):
         """Clone kombu.Connection as new KombuConnection instance."""
         # implementation copied from `kombu.Connection.clone()` method
         return cls(**dict(connection._info(resolve=False)), **kwargs)
+
+    def Producer(self, channel=None, *args, **kwargs) -> kombu.Producer:
+        from .producer import AutoChannelReleaseProducer
+
+        return AutoChannelReleaseProducer(channel or self, *args, **kwargs)
+
+    def SimpleQueue(
+        self,
+        name: str,
+        no_ack: "bool | None" = None,
+        queue_opts: "dict | None" = None,
+        queue_args: "dict | None" = None,
+        exchange_opts: "dict | None" = None,
+        channel: "kombu.Connection | Channel" = None,
+        **kwargs,
+    ):
+        """Thread-safe variant of SimpleQueue."""
+        from .simple import SimpleQueue
+
+        return SimpleQueue(
+            channel or self, name, no_ack, queue_opts, queue_args, exchange_opts, **kwargs
+        )
+
+    def SimpleBuffer(
+        self,
+        name: str,
+        no_ack: "bool | None" = None,
+        queue_opts: "dict | None" = None,
+        queue_args: "dict | None" = None,
+        exchange_opts: "dict | None" = None,
+        channel: "kombu.Connection | Channel" = None,
+        **kwargs,
+    ):
+        from .simple import SimpleBuffer
+
+        return SimpleBuffer(
+            channel or self, name, no_ack, queue_opts, queue_args, exchange_opts, **kwargs
+        )
 
     def get_transport_cls(self):
         transport_cls = super().get_transport_cls()
