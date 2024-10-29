@@ -6,8 +6,6 @@ import kombu.resource
 import pytest
 from kombu.utils.functional import lazy
 
-import kombu_pyamqp_threadsafe
-
 
 @pytest.fixture()
 def rabbitmq_username():
@@ -70,6 +68,8 @@ def get_kombu_resource_all_objects(
 
 @pytest.fixture()
 def connection(rabbitmq_dsn):
+    import kombu_pyamqp_threadsafe
+
     connection = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn, default_channel_pool_size=1)
     assert not connection.connected
     yield connection
@@ -78,6 +78,8 @@ def connection(rabbitmq_dsn):
 
 @pytest.fixture()
 def queue_name(request, rabbitmq_dsn):
+    import kombu_pyamqp_threadsafe
+
     queue_name = request.node.name
 
     conn = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn)
