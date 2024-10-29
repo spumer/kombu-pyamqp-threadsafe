@@ -1,3 +1,14 @@
+## v0.5.0 (2024-10-29)
+
+### Feat
+
+- now connection.Producer can be used with pooled channels and relase it automatically
+
+### Fix
+
+- race condition: now closed channel can't be acquired again
+- channel leak in Connection.default_channel (regression e821b32cd7); Revert back default_channel creation method
+
 ## v0.4.2 (2024-10-21)
 
 ### Fix
