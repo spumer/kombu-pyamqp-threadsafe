@@ -1,8 +1,12 @@
+import inspect
 import os
+import ssl
 
 import kombu.resource
 import pytest
 from kombu.utils.functional import lazy
+
+import kombu_pyamqp_threadsafe
 
 
 @pytest.fixture()
@@ -62,3 +66,38 @@ def get_kombu_resource_all_objects(
         )
 
     return _inner
+
+
+@pytest.fixture()
+def connection(rabbitmq_dsn):
+    connection = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn, default_channel_pool_size=1)
+    assert not connection.connected
+    yield connection
+    connection.close()
+
+
+@pytest.fixture()
+def queue_name(request, rabbitmq_dsn):
+    queue_name = request.node.name
+
+    conn = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn)
+    kombu.Queue(queue_name, channel=conn).delete()
+
+    yield queue_name
+
+    kombu.Queue(queue_name, channel=conn).delete()
+    conn.close()
+
+
+def _sslerr_frame_writer(*args, **kwargs):
+    frame = inspect.stack()[1].frame
+    frame.f_locals["transport"].close()  # ensure TCPTransport really closed
+    raise ssl.SSLEOFError("EOF occurred")
+
+
+@pytest.fixture()
+def make_channel_raise_sslerror():
+    def inner(channel):
+        channel.connection.frame_writer = _sslerr_frame_writer
+
+    return inner

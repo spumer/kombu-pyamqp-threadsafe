@@ -55,7 +55,7 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
         return channel
 
     def release(self, resource: "ThreadSafeChannel"):
-        if resource.connection is None or not resource.is_open or resource.is_closing:
+        if not resource.is_usable():
             if self.limit:
                 self._dirty.discard(resource)
             return
@@ -83,6 +83,15 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         if self._channel_pool is None:
             return None
         return self._channel_pool()
+
+    def is_usable(self):
+        if self.connection is None:
+            return False
+
+        if self.is_closing:
+            return False
+
+        return self.is_open
 
     def change_owner(self, new_owner):
         prev_owner = self._owner_ident
@@ -460,13 +469,23 @@ class KombuConnection(kombu.Connection):
     def default_channel(self) -> ThreadSafeChannel:
         channel = self._default_channel
 
-        if channel is None:
+        if channel is None or not channel.is_usable():
             with self._transport_lock:
                 channel = self._default_channel
-                if channel is None:
-                    pool = self.default_channel_pool
-                    channel = pool.acquire()
+                if channel is None or not channel.is_usable():
+                    # do not acquire channel from pool
+                    # this channel will be never released
+                    # and default_channel can be reused by any thread
+                    # guarantee pool channels not used by any other thread when acquired
+                    conn_opts = self._extract_failover_opts()
+                    self._ensure_connection(**conn_opts)
+
+                    channel = self.channel()
                     self._default_channel = channel
+
+        if channel is None:
+            # mypy typeguard
+            raise RuntimeError("Channel was not initialized properly")
 
         return channel
 

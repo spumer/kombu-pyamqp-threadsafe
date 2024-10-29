@@ -1,32 +1,21 @@
-import inspect
 import ssl
 
 import pytest
 
-import kombu_pyamqp_threadsafe
 
-
-@pytest.fixture()
-def connection(rabbitmq_dsn):
-    connection = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn, default_channel_pool_size=1)
-    assert not connection.connected
-    yield connection
-    connection.close()
-
-
-def test_ssl_error__channel_collected(request, mocker, connection):
+def test_ssl_error__channel_collected(
+    request,
+    mocker,
+    connection,
+    get_kombu_resource_all_objects,
+    make_channel_raise_sslerror,
+):
     """Test connection and channel will be closed when SSLError occurred in channel send_method"""
-
-    def _sslerr_frame_writer(*args, **kwargs):
-        frame = inspect.stack()[1].frame
-        frame.f_locals["transport"].close()  # ensure TCPTransport really closed
-        raise ssl.SSLEOFError("EOF occurred")
-
     pool = connection.default_channel_pool
 
-    with connection.default_channel_pool.acquire() as channel:
+    with pool.acquire() as channel:
         channel_collect_spy = mocker.spy(channel, "collect")
-        channel.connection.frame_writer = _sslerr_frame_writer
+        make_channel_raise_sslerror(channel)
 
         with pytest.raises(ssl.SSLEOFError):
             channel.queue_declare(queue=request.node.name, durable=False, auto_delete=True)
@@ -46,3 +35,20 @@ def test_ssl_error__channel_collected(request, mocker, connection):
     # ChannelPool did not know about connection problems
     # but when try to acquire it's ensure connection
     assert connection.default_channel_pool is pool
+
+    assert len(get_kombu_resource_all_objects(connection.default_channel_pool)) == 1
+
+
+def test_default_channel__collect__open_new(connection):
+    """Test Connection.default_channel will be reopened"""
+    prev = connection.default_channel
+    assert prev is not None
+
+    connection.collect()
+    assert not prev.is_open
+
+    new = connection.default_channel
+    assert new is not None
+    assert prev is not new
+
+    assert new.is_open
