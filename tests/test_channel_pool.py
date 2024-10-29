@@ -3,16 +3,6 @@ import contextlib
 import kombu.exceptions
 import pytest
 
-import kombu_pyamqp_threadsafe
-
-
-@pytest.fixture()
-def connection(rabbitmq_dsn):
-    connection = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn, default_channel_pool_size=1)
-    assert not connection.connected
-    yield connection
-    connection.close()
-
 
 @pytest.mark.parametrize(
     "ctx_closing", [True, False], ids=["contextlib.closing", "ThreadsafeChannel.__enter__"]
@@ -124,3 +114,37 @@ def test_ctx_manager__exception__release(
     assert get_kombu_resource_all_objects(connection.default_channel_pool) == [channel]
     assert get_kombu_resource_acquired_objects(connection.default_channel_pool) == []
     assert get_kombu_resource_free_objects(connection.default_channel_pool) == [channel]
+
+
+def test_channel__twice_release__handled_once(
+    connection,
+    get_kombu_resource_all_objects,
+    get_kombu_resource_free_objects,
+):
+    """Test channel can be released multiple times, but handled only once"""
+    channel = connection.default_channel_pool.acquire()
+    assert get_kombu_resource_all_objects(connection.default_channel_pool) == [channel]
+
+    for _ in range(2):
+        channel.release()
+        assert get_kombu_resource_all_objects(connection.default_channel_pool) == [channel]
+        assert get_kombu_resource_free_objects(connection.default_channel_pool) == [channel]
+
+
+def test_connection__collect__channel_removed_from_pool(
+    connection,
+    queue_name,
+    get_kombu_resource_all_objects,
+):
+    """Test channel removed from pool when connection collected"""
+    pool = connection.default_channel_pool
+
+    with pool.acquire() as channel:
+        assert get_kombu_resource_all_objects(pool) == [channel]
+        connection.collect()
+        assert not channel.is_open
+        assert get_kombu_resource_all_objects(pool) == []
+
+    with pool.acquire() as channel:
+        # check we can acquire new channel again and no limit exceeded
+        assert get_kombu_resource_all_objects(pool) == [channel]

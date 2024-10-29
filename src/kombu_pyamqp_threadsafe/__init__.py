@@ -60,7 +60,17 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
                 self._dirty.discard(resource)
             return
 
-        super().release(resource)
+        if self.limit:
+            try:
+                self._dirty.remove(resource)
+            except KeyError:
+                # prevent twice release
+                pass
+            else:
+                self._resource.put_nowait(resource)
+                self.release_resource(resource)
+        else:
+            self.close_resource(resource)
 
 
 ChannelPool = ThreadSafeChannelPool
@@ -128,6 +138,10 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
             bindings.remove(self.channel_id)
 
         super().collect()
+
+        pool = self.channel_pool
+        if pool is not None:
+            pool.release(self)
 
     def close(self, *args, **kwargs):
         """Return a channel to pool if it's possible, otherwise close it"""
