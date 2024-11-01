@@ -603,12 +603,13 @@ class KombuConnection(kombu.Connection):
             return connection
 
     def revive(self, new_channel: ThreadSafeChannel):
-        with self._transport_lock:
-            super().revive(new_channel)
-            channel_pool = new_channel.channel_pool
-            assert channel_pool is not None
-            if channel_pool is not self._default_channel_pool:
-                raise RuntimeError("Channel bound to different pool")
+        # Nothing to do here
+        # Connection revives through _ensure_connection,
+        #   and this method called in Connection.ensure() with self.default_channel
+        #   new_channel is always self.default_channel.
+        # IDK, why you try to revive Connection by already opened channel.
+        # If you have opened a channel, your Connection is already revived.
+        super().revive(new_channel)
 
     def channel(self):
         with self._transport_lock:
