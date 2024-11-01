@@ -1,3 +1,9 @@
+## v0.5.1 (2024-11-01)
+
+### Fix
+
+- **KombuConnection**: AssertError when make `connection.ensure(connection, ...)`
+
 ## v0.5.0 (2024-10-29)
 
 ### Feat
