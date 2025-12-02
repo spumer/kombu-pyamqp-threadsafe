@@ -5,7 +5,6 @@ import contextlib
 import functools
 import logging
 import os
-import socket
 import ssl
 import threading
 import time
@@ -268,8 +267,9 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         with self._create_channel_lock:
             return super()._get_free_channel_id()
 
-    def _dispatch_channel_frames(self, channel_id):
+    def _dispatch_channel_frames(self, channel_id) -> int:
         buff = self.channel_frame_buff.get(channel_id, ())
+        processed_frames = len(buff)
 
         while buff:
             method_sig, payload, content = buff.popleft()
@@ -278,6 +278,8 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
                 payload,
                 content,
             )
+
+        return processed_frames
 
     def on_inbound_method(self, channel_id, method_sig, payload, content):
         if self.channels is None:
@@ -329,10 +331,42 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         with self._transport_lock:
             super().collect()
 
-    def drain_events(self, timeout=None):
+    def _dispatch_pending_events(self) -> int:
+        processed_frames = self._dispatch_channel_frames(self.CONNECTION_CHANNEL_ID)
+
+        me = threading.get_ident()
+        my_channels = self.channel_thread_bindings[me]
+        for channel_id in my_channels:
+            processed_frames += self._dispatch_channel_frames(channel_id)
+
+        return processed_frames
+
+    def drain_events(self, timeout=None, _nodispatch=False):
+        """Drains events from the transport and dispatches them if applicable.
+        Called each time when we expect a response from the broker or any other reaction.
+
+        :param timeout: Maximum time to wait for events to be drained. If None, wait indefinitely.
+        :type timeout: Optional[float]
+        :param _nodispatch: (internal only parameter) If True, events will not be dispatched after being drained.
+        :type _nodispatch: bool
+        :return: None
+        """
         # When all threads go here only one really drain events,
         # because this action independent of caller.
         # All events will be dispatched to their channels
+
+        if not _nodispatch:
+            dispatched = self._dispatch_pending_events()
+
+            if dispatched and timeout is None:
+                # EDGE-CASE (PART 2): previous drain_events() call skipped dispatching
+                #   e.g., for connection checking only.
+                # Now we're dropping into risk forever awaiting in below drain_events()
+                #   because all expected events are here.
+                #
+                # Return early and allow kombu to decide to call drain_events again or not.
+                # These are possible because we drain events when checking connection health.
+                return
 
         started = self._drain_guard.start_drain()
 
@@ -346,12 +380,8 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
             finally:
                 self._drain_guard.finish_drain()
 
-        self._dispatch_channel_frames(self.CONNECTION_CHANNEL_ID)
-
-        me = threading.get_ident()
-        my_channels = self.channel_thread_bindings[me]
-        for channel_id in my_channels:
-            self._dispatch_channel_frames(channel_id)
+        if not _nodispatch:
+            self._dispatch_pending_events()
 
 
 class LoggingLock:
@@ -522,8 +552,19 @@ class KombuConnection(kombu.Connection):
             )
             if connected:
                 try:
-                    self._connection.drain_events(timeout=0)
-                except socket.timeout:
+                    # SIDE EFFECT (PART 1):
+                    # Kombu typically calls `drain_events()` only after transport actions (e.g., `send_method()`).
+                    # We use it here strictly to check socket liveness (socket.timeout confirms the socket is readable).
+                    #
+                    # However, if we use the default `_nodispatch=False`, we might silently read and process frames
+                    # that the calling context expects. Since Kombu often checks this property before calling
+                    # `drain_events()`, consuming the event here could cause the subsequent `drain_events(timeout=None)`
+                    # to wait indefinitely for an event that was already handled.
+                    #
+                    # This side effect is the origin of EDGE-CASE (PART 2). See `drain_events()` comments for details.
+
+                    self._connection.drain_events(timeout=0, _nodispatch=True)
+                except TimeoutError:
                     pass
                 except self.connection_errors:
                     connected = False
