@@ -27,14 +27,20 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEBUG = os.getenv("KOMBU_PYAMQP_THREADSAFE_DEBUG", "0").lower() in ("1", "true", "t", "y", "yes")
+DEBUG = os.getenv("KOMBU_PYAMQP_THREADSAFE_DEBUG", "0").lower() in (
+    "1",
+    "true",
+    "t",
+    "y",
+    "yes",
+)
 
 
 class ThreadSafeChannelPool(kombu.connection.ChannelPool):
     def __init__(self, connection, limit=None, **kwargs):
-        assert isinstance(connection, KombuConnection), (
-            f"Expect {KombuConnection.__qualname__}, given: {type(connection)}"
-        )
+        assert isinstance(
+            connection, KombuConnection
+        ), f"Expect {KombuConnection.__qualname__}, given: {type(connection)}"
         super().__init__(connection, limit=limit, **kwargs)
 
     @property
@@ -48,7 +54,9 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
         # This prevents locking and simplifies pool internals, but expensive
         super().setup()
 
-    def acquire(self, block: bool = False, timeout: "float | None" = None) -> "ThreadSafeChannel":
+    def acquire(
+        self, block: bool = False, timeout: "float | None" = None
+    ) -> "ThreadSafeChannel":
         channel: ThreadSafeChannel = super().acquire(block=block, timeout=timeout)
         channel.change_owner(threading.get_ident())
 
@@ -94,7 +102,9 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         super().__init__(*args, **kwargs)
         self._owner_ident = threading.get_ident()
         self._channel_pool: weakref.ReferenceType[ThreadSafeChannel] | None = None
-        self.connection.channel_thread_bindings[self._owner_ident].append(self.channel_id)
+        self.connection.channel_thread_bindings[self._owner_ident].append(
+            self.channel_id
+        )
 
     def _bind_to_pool(self, channel_pool: "ThreadSafeChannelPool"):
         self._channel_pool = weakref.ref(channel_pool)
@@ -132,7 +142,8 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         except AttributeError as exc:
             if (
                 not self.connection
-                and str(exc) == "AttributeError: 'NoneType' object has no attribute 'drain_events'"
+                and str(exc)
+                == "AttributeError: 'NoneType' object has no attribute 'drain_events'"
             ):
                 raise RecoverableConnectionError("connection already closed") from None
 
@@ -141,7 +152,8 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         channel_frame_buff = conn.channel_frame_buff.pop(self.channel_id, ())
         if channel_frame_buff:
             logger.warning(
-                "No drained events after close (%s pending events)", len(channel_frame_buff)
+                "No drained events after close (%s pending events)",
+                len(channel_frame_buff),
             )
 
         bindings = conn.channel_thread_bindings.get(self._owner_ident) or []
@@ -208,7 +220,9 @@ class DrainGuard:
             if not acquired:
                 return False
 
-            assert self._drain_is_active_by is None
+            assert (
+                self._drain_is_active_by is None
+            ), "Drain already active; same thread cannot start drain twice"
             self._drain_is_active_by = threading.get_ident()
 
         return True
@@ -216,9 +230,9 @@ class DrainGuard:
     def finish_drain(self):
         caller = threading.get_ident()
         assert self._drain_is_active_by is not None, "Drain must be started"
-        assert self._drain_is_active_by == caller, (
-            "You can not finish drain started by other thread"
-        )
+        assert (
+            self._drain_is_active_by == caller
+        ), "You can not finish drain started by other thread"
         with self._drain_cond:
             self._drain_is_active_by = None
             self._drain_cond.notify_all()
@@ -226,7 +240,9 @@ class DrainGuard:
 
     def wait_drain_finished(self, timeout=None):
         caller = threading.get_ident()
-        assert self._drain_is_active_by != caller, "You can not wait your own; deadlock detected"
+        assert (
+            self._drain_is_active_by != caller
+        ), "You can not wait your own; deadlock detected"
         with self._drain_cond:
             if self.is_drain_active():
                 self._drain_cond.wait(timeout=timeout)
@@ -252,7 +268,9 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
             collections.deque
         )  # channel_id: [frame, frame, ...]
 
-        self.channel_thread_bindings[threading.get_ident()].append(self.CONNECTION_CHANNEL_ID)
+        self.channel_thread_bindings[threading.get_ident()].append(
+            self.CONNECTION_CHANNEL_ID
+        )
         super().__init__(*args, **kwargs)
 
     def channel(self, *args, **kwargs):
@@ -283,7 +301,9 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
 
     def on_inbound_method(self, channel_id, method_sig, payload, content):
         if self.channels is None:
-            raise amqp.exceptions.RecoverableConnectionError("Connection already closed")
+            raise amqp.exceptions.RecoverableConnectionError(
+                "Connection already closed"
+            )
 
         # collect all frames to late dispatch (after drain)
         self.channel_frame_buff[channel_id].append((method_sig, payload, content))
@@ -468,7 +488,9 @@ class KombuConnection(kombu.Connection):
         super().__init__(*args, **kwargs)
 
     @classmethod
-    def from_kombu_connection(cls, connection: kombu.Connection, **kwargs) -> "KombuConnection":
+    def from_kombu_connection(
+        cls, connection: kombu.Connection, **kwargs
+    ) -> "KombuConnection":
         """Clone kombu.Connection as new KombuConnection instance."""
         # implementation copied from `kombu.Connection.clone()` method
         return cls(**dict(connection._info(resolve=False)), **kwargs)
@@ -492,7 +514,13 @@ class KombuConnection(kombu.Connection):
         from .simple import SimpleQueue
 
         return SimpleQueue(
-            channel or self, name, no_ack, queue_opts, queue_args, exchange_opts, **kwargs
+            channel or self,
+            name,
+            no_ack,
+            queue_opts,
+            queue_args,
+            exchange_opts,
+            **kwargs,
         )
 
     def SimpleBuffer(
@@ -508,7 +536,13 @@ class KombuConnection(kombu.Connection):
         from .simple import SimpleBuffer
 
         return SimpleBuffer(
-            channel or self, name, no_ack, queue_opts, queue_args, exchange_opts, **kwargs
+            channel or self,
+            name,
+            no_ack,
+            queue_opts,
+            queue_args,
+            exchange_opts,
+            **kwargs,
         )
 
     def get_transport_cls(self):
