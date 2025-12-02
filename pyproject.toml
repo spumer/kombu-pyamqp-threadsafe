@@ -18,7 +18,7 @@ version_provider = "poetry"
 
 [tool.poetry.dependencies]  # https://python-poetry.org/docs/dependency-specification/
 python = ">=3.10,<4.0"
-kombu = "^5.3.5"
+kombu = "^5.6.1"
 
 [tool.poetry.group.test.dependencies]  # https://python-poetry.org/docs/master/managing-dependencies/
 commitizen = ">=3.2.1"

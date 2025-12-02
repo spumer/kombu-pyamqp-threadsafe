@@ -32,9 +32,9 @@ DEBUG = os.getenv("KOMBU_PYAMQP_THREADSAFE_DEBUG", "0").lower() in ("1", "true",
 
 class ThreadSafeChannelPool(kombu.connection.ChannelPool):
     def __init__(self, connection, limit=None, **kwargs):
-        assert isinstance(
-            connection, KombuConnection
-        ), f"Expect {KombuConnection.__qualname__}, given: {type(connection)}"
+        assert isinstance(connection, KombuConnection), (
+            f"Expect {KombuConnection.__qualname__}, given: {type(connection)}"
+        )
         super().__init__(connection, limit=limit, **kwargs)
 
     @property
@@ -216,9 +216,9 @@ class DrainGuard:
     def finish_drain(self):
         caller = threading.get_ident()
         assert self._drain_is_active_by is not None, "Drain must be started"
-        assert (
-            self._drain_is_active_by == caller
-        ), "You can not finish drain started by other thread"
+        assert self._drain_is_active_by == caller, (
+            "You can not finish drain started by other thread"
+        )
         with self._drain_cond:
             self._drain_is_active_by = None
             self._drain_cond.notify_all()
