@@ -90,7 +90,7 @@ def assert_elapsed_time_within(
     expected: float,
     tolerance: float = 0.1,
     context: str = "",
-):
+) -> None:
     """Assert elapsed time within tolerance range.
 
     Args:
@@ -117,13 +117,13 @@ def assert_elapsed_time_within(
 
 
 @pytest.fixture
-def guard():
+def guard() -> DrainGuard:
     """Provide fresh DrainGuard instance for each test."""
     return DrainGuard()
 
 
 @pytest.fixture(scope="session")
-def thread_timeout():
+def thread_timeout() -> float:
     """Default timeout for thread operations (seconds)."""
     return 2.0
 
@@ -136,7 +136,7 @@ def thread_timeout():
 class TestSingleThreadedBehavior:
     """Tests for basic DrainGuard operations in single-threaded context."""
 
-    def test_initial_state_is_inactive(self, guard):
+    def test_initial_state_is_inactive(self, guard: DrainGuard) -> None:
         """Verify clean initial state after construction.
 
         A newly created DrainGuard should be in inactive state:
@@ -146,7 +146,7 @@ class TestSingleThreadedBehavior:
         assert guard.is_drain_active() is False
         assert guard._drain_is_active_by is None
 
-    def test_start_drain_first_time_succeeds(self, guard):
+    def test_start_drain_first_time_succeeds(self, guard: DrainGuard) -> None:
         """Verify first drain acquisition succeeds.
 
         When start_drain() is called for the first time:
@@ -163,7 +163,9 @@ class TestSingleThreadedBehavior:
         # Cleanup
         guard.finish_drain()
 
-    def test_start_drain_second_attempt_same_thread_raises_assertion(self, guard):
+    def test_start_drain_second_attempt_same_thread_raises_assertion(
+        self, guard: DrainGuard
+    ) -> None:
         """Verify assertion prevents same thread from acquiring drain twice.
 
         When the same thread tries to start_drain() twice:
@@ -198,7 +200,7 @@ class TestSingleThreadedBehavior:
         guard.finish_drain()
         assert guard.is_drain_active() is False
 
-    def test_finish_drain_normal_flow_cleans_state(self, guard):
+    def test_finish_drain_normal_flow_cleans_state(self, guard: DrainGuard) -> None:
         """Verify proper drain cleanup.
 
         After successfully finishing a drain:
@@ -217,7 +219,9 @@ class TestSingleThreadedBehavior:
         assert result is True
         guard.finish_drain()
 
-    def test_finish_drain_without_start_raises_assertion(self, guard):
+    def test_finish_drain_without_start_raises_assertion(
+        self, guard: DrainGuard
+    ) -> None:
         """Verify assertion fires when finishing non-existent drain.
 
         Calling finish_drain() without prior start_drain() should raise
@@ -226,7 +230,7 @@ class TestSingleThreadedBehavior:
         with pytest.raises(AssertionError, match="Drain must be started"):
             guard.finish_drain()
 
-    def test_wait_when_not_active_returns_immediately(self, guard):
+    def test_wait_when_not_active_returns_immediately(self, guard: DrainGuard) -> None:
         """Verify wait returns immediately when no drain active.
 
         When no drain is active, wait_drain_finished() should:
@@ -239,7 +243,9 @@ class TestSingleThreadedBehavior:
             elapsed < IMMEDIATE_RETURN_THRESHOLD
         ), f"Expected immediate return, took {elapsed:.3f}s"
 
-    def test_wait_self_deadlock_detection_raises_assertion(self, guard):
+    def test_wait_self_deadlock_detection_raises_assertion(
+        self, guard: DrainGuard
+    ) -> None:
         """Verify assertion prevents thread from waiting for itself.
 
         When a thread that started drain tries to wait for itself:
@@ -266,8 +272,8 @@ class TestMultiThreadedRaceConditions:
     """Tests for concurrent access patterns and race condition handling."""
 
     def test_concurrent_start_drain_two_threads_mutual_exclusion(
-        self, guard, thread_timeout
-    ):
+        self, guard: DrainGuard, thread_timeout: float
+    ) -> None:
         """Verify mutual exclusion - only one thread acquires drain.
 
         When 2 threads try to start_drain() simultaneously:
@@ -307,7 +313,9 @@ class TestMultiThreadedRaceConditions:
         # After winner finishes, drain should be inactive
         assert guard.is_drain_active() is False
 
-    def test_concurrent_start_drain_stress_test_multiple_threads(self, thread_timeout):
+    def test_concurrent_start_drain_stress_test_multiple_threads(
+        self, thread_timeout: float
+    ) -> None:
         """Verify mutual exclusion under high contention.
 
         Run 100 iterations with 10 threads competing for drain:
@@ -322,7 +330,7 @@ class TestMultiThreadedRaceConditions:
             guard = DrainGuard()
             start_barrier = threading.Barrier(n_threads)
             finish_barrier = threading.Barrier(n_threads)
-            results = []
+            results: list[tuple[int, bool]] = []
 
             def worker(
                 _guard=guard,
@@ -373,8 +381,8 @@ class TestMultiThreadedRaceConditions:
             assert guard.is_drain_active() is False
 
     def test_wait_until_finished_blocks_until_drain_completes(
-        self, guard, thread_timeout
-    ):
+        self, guard: DrainGuard, thread_timeout: float
+    ) -> None:
         """Verify waiting thread unblocks when drain finishes.
 
         Setup:
@@ -438,7 +446,9 @@ class TestMultiThreadedRaceConditions:
             context="waiter should block until drainer finishes",
         )
 
-    def test_wait_timeout_behavior_returns_after_timeout(self, guard, thread_timeout):
+    def test_wait_timeout_behavior_returns_after_timeout(
+        self, guard: DrainGuard, thread_timeout: float
+    ) -> None:
         """Verify timeout works correctly when drain doesn't finish.
 
         Setup:
@@ -495,7 +505,9 @@ class TestMultiThreadedRaceConditions:
             context="waiter should return after timeout",
         )
 
-    def test_notification_to_all_waiters_wakes_everyone(self, guard, thread_timeout):
+    def test_notification_to_all_waiters_wakes_everyone(
+        self, guard: DrainGuard, thread_timeout: float
+    ) -> None:
         """Verify notify_all() wakes up all waiting threads.
 
         Setup:
@@ -577,7 +589,9 @@ class TestMultiThreadedRaceConditions:
         # Verify all waiters completed
         assert len(completed_count) == n_waiters
 
-    def test_sequential_drain_handoff_between_threads(self, guard, thread_timeout):
+    def test_sequential_drain_handoff_between_threads(
+        self, guard: DrainGuard, thread_timeout: float
+    ) -> None:
         """Verify proper state transitions between thread ownership.
 
         Three threads sequentially acquire and release drain:
@@ -647,8 +661,8 @@ class TestEdgeCasesAndErrors:
     """Tests for boundary conditions and error scenarios."""
 
     def test_finish_drain_from_wrong_thread_raises_assertion(
-        self, guard, thread_timeout
-    ):
+        self, guard: DrainGuard, thread_timeout: float
+    ) -> None:
         """Verify assertion prevents cross-thread finish.
 
         Setup:
@@ -696,7 +710,7 @@ class TestEdgeCasesAndErrors:
         assert len(error_message) == 1
         assert "You can not finish drain started by other thread" in error_message[0]
 
-    def test_multiple_finish_calls_raises_assertion(self, guard):
+    def test_multiple_finish_calls_raises_assertion(self, guard: DrainGuard) -> None:
         """Verify assertion fires on second finish.
 
         Calling finish_drain() twice without intervening start_drain()
@@ -709,7 +723,9 @@ class TestEdgeCasesAndErrors:
         with pytest.raises(AssertionError, match="Drain must be started"):
             guard.finish_drain()
 
-    def test_wait_with_zero_timeout_polls_immediately(self, guard, thread_timeout):
+    def test_wait_with_zero_timeout_polls_immediately(
+        self, guard: DrainGuard, thread_timeout: float
+    ) -> None:
         """Verify zero timeout behaves correctly (poll behavior).
 
         When drain is active and wait_drain_finished(timeout=0) is called:
@@ -757,7 +773,7 @@ class TestEdgeCasesAndErrors:
             elapsed_time[0] < POLL_RETURN_THRESHOLD
         ), f"Expected immediate return, took {elapsed_time[0]:.3f}s"
 
-    def test_wait_with_negative_timeout_behavior(self, guard):
+    def test_wait_with_negative_timeout_behavior(self, guard: DrainGuard) -> None:
         """Verify negative timeout handling.
 
         Python's Condition.wait() with negative timeout should be treated
@@ -792,7 +808,7 @@ class TestEdgeCasesAndErrors:
             result[0] < POLL_RETURN_THRESHOLD
         ), f"Expected immediate return, took {result[0]:.3f}s"
 
-    def test_reentrancy_check_rlock_behavior(self, guard):
+    def test_reentrancy_check_rlock_behavior(self, guard: DrainGuard) -> None:
         """Verify RLock allows reentrancy but assertion prevents double-drain.
 
         DrainGuard uses RLock which DOES allow reentrancy. However, the
@@ -838,7 +854,9 @@ class TestEdgeCasesAndErrors:
 class TestIntegrationPatterns:
     """Tests for real-world usage patterns."""
 
-    def test_typical_usage_pattern_from_drain_events(self, guard, thread_timeout):
+    def test_typical_usage_pattern_from_drain_events(
+        self, guard: DrainGuard, thread_timeout: float
+    ) -> None:
         """Verify the pattern used in ThreadSafeConnection.drain_events().
 
         Pattern:
