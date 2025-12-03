@@ -6,6 +6,7 @@ import functools
 import logging
 import os
 import ssl
+import sys
 import threading
 import time
 import typing
@@ -191,6 +192,8 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
 
 
 class DrainGuard:
+    _drain_exc: Exception | None
+
     def __init__(self):
         cond_lock = threading.RLock()
         check_lock = threading.RLock()
@@ -202,6 +205,7 @@ class DrainGuard:
         self._drain_cond = threading.Condition(lock=cond_lock)
         self._drain_check_lock = check_lock
         self._drain_is_active_by = None
+        self._drain_exc = None
 
     def is_drain_active(self):
         return self._drain_is_active_by is not None
@@ -224,28 +228,51 @@ class DrainGuard:
                 self._drain_is_active_by is None
             ), "Drain already active; same thread cannot start drain twice"
             self._drain_is_active_by = threading.get_ident()
+            self._drain_exc = None
 
         return True
 
-    def finish_drain(self):
+    def finish_drain(self, exc: Exception | None = None):
         caller = threading.get_ident()
         assert self._drain_is_active_by is not None, "Drain must be started"
         assert (
             self._drain_is_active_by == caller
         ), "You can not finish drain started by other thread"
         with self._drain_cond:
+            self._drain_exc = exc
             self._drain_is_active_by = None
             self._drain_cond.notify_all()
             self._drain_check_lock.release()
 
     def wait_drain_finished(self, timeout=None):
+        """Waits until the drain process has completed or until the specified timeout elapses.
+
+        This method blocks execution while waiting for a drain operation to finish. It
+        also ensures the caller is not its own blocker, preventing potential deadlocks.
+        If the drain process raises an exception, that exception will be re-raised by
+        this method.
+
+        :param timeout: The time, in seconds, to wait for the drain to finish. If None,
+            it waits until the drain process is complete regardless of duration.
+        :type timeout: float or None
+        :raises Exception: If an exception occurs during the drain process, it is
+            re-raised by this method.
+        """
         caller = threading.get_ident()
         assert (
             self._drain_is_active_by != caller
         ), "You can not wait your own; deadlock detected"
         with self._drain_cond:
             if self.is_drain_active():
+                #  Important: wait_drain_finished(timeout=...) does NOT raise exception on timeout.
+                #  This differs from drain_events(timeout=...) which expects socket.timeout.
+                #  Reason: socket.timeout means "socket is alive, but no data" - concrete socket state.
+                #  But wait_drain_finished() doesn't know socket state (only waits for another thread),
+                #  so raising TimeoutError would mislead upper layers about actual socket condition.
                 self._drain_cond.wait(timeout=timeout)
+
+                if self._drain_exc is not None:
+                    raise self._drain_exc
 
 
 class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
@@ -391,14 +418,15 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         started = self._drain_guard.start_drain()
 
         if not started:
-            self._drain_guard.wait_drain_finished()
+            self._drain_guard.wait_drain_finished(timeout=timeout)
         else:
             try:
                 with self._transport_lock:
                     super().drain_events(timeout=timeout)
 
             finally:
-                self._drain_guard.finish_drain()
+                _, exc, _ = sys.exc_info()
+                self._drain_guard.finish_drain(exc=exc)
 
         if not _nodispatch:
             self._dispatch_pending_events()
