@@ -103,6 +103,7 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         super().__init__(*args, **kwargs)
         self._owner_ident = threading.get_ident()
         self._channel_pool: weakref.ReferenceType[ThreadSafeChannel] | None = None
+        self._is_releasing = False
         self.connection.channel_thread_bindings[self._owner_ident].append(
             self.channel_id
         )
@@ -161,19 +162,38 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         with contextlib.suppress(ValueError):
             bindings.remove(self.channel_id)
 
+        # Detach from pool before calling super().collect() to prevent re-entrant calls
+        # super().collect() may trigger events that call close() again
+        pool = self.channel_pool
+        if pool is not None:
+            self._channel_pool = None
+
         super().collect()
 
-        pool = self.channel_pool
+        # Release to pool only if we detached it above
+        # This prevents double-release race condition
         if pool is not None:
             pool.release(self)
 
     def close(self, *args, **kwargs):
-        """Return a channel to pool if it's possible, otherwise close it"""
+        """Return a channel to pool if it's possible, otherwise close it."""
+        if self._is_releasing:
+            return
+
         pool = self.channel_pool
-        if pool is not None:
-            pool.release(self)
-        else:
+        if pool is None:
             super().close(*args, **kwargs)
+            return
+
+        # Detach channel from pool before releasing
+        # this prevents double-releasing on re-entrant calls
+        # when pool.release() might call close_resource() -> super().close() -> events -> close() again
+        self._channel_pool = None
+        self._is_releasing = True
+        try:
+            pool.release(self)
+        finally:
+            self._is_releasing = False
 
     def force_close(self, *args, **kwargs):
         """Force close connection without pool interaction.
