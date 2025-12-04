@@ -7,17 +7,17 @@ import pytest
 from kombu.utils.functional import lazy
 
 
-@pytest.fixture()
+@pytest.fixture
 def rabbitmq_username():
     return "guest"
 
 
-@pytest.fixture()
+@pytest.fixture
 def rabbitmq_password():
     return "guest"
 
 
-@pytest.fixture()
+@pytest.fixture
 def rabbitmq_hostname():
     if hostname := os.getenv("PYTEST_RABBITMQ_HOST"):
         return hostname
@@ -25,7 +25,7 @@ def rabbitmq_hostname():
     return "127.0.0.1"
 
 
-@pytest.fixture()
+@pytest.fixture
 def rabbitmq_port():
     if port := os.getenv("PYTEST_RABBITMQ_PORT"):
         return int(port)
@@ -33,7 +33,7 @@ def rabbitmq_port():
     return 5672
 
 
-@pytest.fixture()
+@pytest.fixture
 def rabbitmq_dsn(rabbitmq_username, rabbitmq_password, rabbitmq_hostname, rabbitmq_port):
     return f"amqp://{rabbitmq_username}:{rabbitmq_password}@{rabbitmq_hostname}:{rabbitmq_port}/"
 
@@ -66,7 +66,7 @@ def get_kombu_resource_all_objects(
     return _inner
 
 
-@pytest.fixture()
+@pytest.fixture
 def connection(rabbitmq_dsn):
     import kombu_pyamqp_threadsafe
 
@@ -76,7 +76,7 @@ def connection(rabbitmq_dsn):
     connection.close()
 
 
-@pytest.fixture()
+@pytest.fixture
 def queue_name(request, rabbitmq_dsn):
     import kombu_pyamqp_threadsafe
 
@@ -97,7 +97,7 @@ def _sslerr_frame_writer(*args, **kwargs):
     raise ssl.SSLEOFError("EOF occurred")
 
 
-@pytest.fixture()
+@pytest.fixture
 def make_channel_raise_sslerror():
     def inner(channel):
         channel.connection.frame_writer = _sslerr_frame_writer

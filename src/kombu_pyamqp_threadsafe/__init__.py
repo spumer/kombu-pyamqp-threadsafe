@@ -5,8 +5,8 @@ import contextlib
 import functools
 import logging
 import os
-import socket
 import ssl
+import sys
 import threading
 import time
 import typing
@@ -28,7 +28,13 @@ if typing.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEBUG = os.getenv("KOMBU_PYAMQP_THREADSAFE_DEBUG", "0").lower() in ("1", "true", "t", "y", "yes")
+DEBUG = os.getenv("KOMBU_PYAMQP_THREADSAFE_DEBUG", "0").lower() in (
+    "1",
+    "true",
+    "t",
+    "y",
+    "yes",
+)
 
 
 class ThreadSafeChannelPool(kombu.connection.ChannelPool):
@@ -49,7 +55,9 @@ class ThreadSafeChannelPool(kombu.connection.ChannelPool):
         # This prevents locking and simplifies pool internals, but expensive
         super().setup()
 
-    def acquire(self, block: bool = False, timeout: "float | None" = None) -> "ThreadSafeChannel":
+    def acquire(
+        self, block: bool = False, timeout: "float | None" = None
+    ) -> "ThreadSafeChannel":
         channel: ThreadSafeChannel = super().acquire(block=block, timeout=timeout)
         channel.change_owner(threading.get_ident())
 
@@ -95,7 +103,9 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         super().__init__(*args, **kwargs)
         self._owner_ident = threading.get_ident()
         self._channel_pool: weakref.ReferenceType[ThreadSafeChannel] | None = None
-        self.connection.channel_thread_bindings[self._owner_ident].append(self.channel_id)
+        self.connection.channel_thread_bindings[self._owner_ident].append(
+            self.channel_id
+        )
 
     def _bind_to_pool(self, channel_pool: "ThreadSafeChannelPool"):
         self._channel_pool = weakref.ref(channel_pool)
@@ -133,7 +143,8 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         except AttributeError as exc:
             if (
                 not self.connection
-                and str(exc) == "AttributeError: 'NoneType' object has no attribute 'drain_events'"
+                and str(exc)
+                == "AttributeError: 'NoneType' object has no attribute 'drain_events'"
             ):
                 raise RecoverableConnectionError("connection already closed") from None
 
@@ -142,7 +153,8 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         channel_frame_buff = conn.channel_frame_buff.pop(self.channel_id, ())
         if channel_frame_buff:
             logger.warning(
-                "No drained events after close (%s pending events)", len(channel_frame_buff)
+                "No drained events after close (%s pending events)",
+                len(channel_frame_buff),
             )
 
         bindings = conn.channel_thread_bindings.get(self._owner_ident) or []
@@ -180,6 +192,8 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
 
 
 class DrainGuard:
+    _drain_exc: Exception | None
+
     def __init__(self):
         cond_lock = threading.RLock()
         check_lock = threading.RLock()
@@ -191,6 +205,7 @@ class DrainGuard:
         self._drain_cond = threading.Condition(lock=cond_lock)
         self._drain_check_lock = check_lock
         self._drain_is_active_by = None
+        self._drain_exc = None
 
     def is_drain_active(self):
         return self._drain_is_active_by is not None
@@ -209,28 +224,55 @@ class DrainGuard:
             if not acquired:
                 return False
 
-            assert self._drain_is_active_by is None
+            assert (
+                self._drain_is_active_by is None
+            ), "Drain already active; same thread cannot start drain twice"
             self._drain_is_active_by = threading.get_ident()
+            self._drain_exc = None
 
         return True
 
-    def finish_drain(self):
+    def finish_drain(self, exc: Exception | None = None):
         caller = threading.get_ident()
         assert self._drain_is_active_by is not None, "Drain must be started"
         assert (
             self._drain_is_active_by == caller
         ), "You can not finish drain started by other thread"
         with self._drain_cond:
+            self._drain_exc = exc
             self._drain_is_active_by = None
             self._drain_cond.notify_all()
             self._drain_check_lock.release()
 
     def wait_drain_finished(self, timeout=None):
+        """Waits until the drain process has completed or until the specified timeout elapses.
+
+        This method blocks execution while waiting for a drain operation to finish. It
+        also ensures the caller is not its own blocker, preventing potential deadlocks.
+        If the drain process raises an exception, that exception will be re-raised by
+        this method.
+
+        :param timeout: The time, in seconds, to wait for the drain to finish. If None,
+            it waits until the drain process is complete regardless of duration.
+        :type timeout: float or None
+        :raises Exception: If an exception occurs during the drain process, it is
+            re-raised by this method.
+        """
         caller = threading.get_ident()
-        assert self._drain_is_active_by != caller, "You can not wait your own; deadlock detected"
+        assert (
+            self._drain_is_active_by != caller
+        ), "You can not wait your own; deadlock detected"
         with self._drain_cond:
             if self.is_drain_active():
+                #  Important: wait_drain_finished(timeout=...) does NOT raise exception on timeout.
+                #  This differs from drain_events(timeout=...) which expects socket.timeout.
+                #  Reason: socket.timeout means "socket is alive, but no data" - concrete socket state.
+                #  But wait_drain_finished() doesn't know socket state (only waits for another thread),
+                #  so raising TimeoutError would mislead upper layers about actual socket condition.
                 self._drain_cond.wait(timeout=timeout)
+
+                if self._drain_exc is not None:
+                    raise self._drain_exc
 
 
 class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
@@ -253,7 +295,9 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
             collections.deque
         )  # channel_id: [frame, frame, ...]
 
-        self.channel_thread_bindings[threading.get_ident()].append(self.CONNECTION_CHANNEL_ID)
+        self.channel_thread_bindings[threading.get_ident()].append(
+            self.CONNECTION_CHANNEL_ID
+        )
         super().__init__(*args, **kwargs)
 
     def channel(self, *args, **kwargs):
@@ -268,8 +312,9 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         with self._create_channel_lock:
             return super()._get_free_channel_id()
 
-    def _dispatch_channel_frames(self, channel_id):
+    def _dispatch_channel_frames(self, channel_id) -> int:
         buff = self.channel_frame_buff.get(channel_id, ())
+        processed_frames = len(buff)
 
         while buff:
             method_sig, payload, content = buff.popleft()
@@ -279,9 +324,13 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
                 content,
             )
 
+        return processed_frames
+
     def on_inbound_method(self, channel_id, method_sig, payload, content):
         if self.channels is None:
-            raise amqp.exceptions.RecoverableConnectionError("Connection already closed")
+            raise amqp.exceptions.RecoverableConnectionError(
+                "Connection already closed"
+            )
 
         # collect all frames to late dispatch (after drain)
         self.channel_frame_buff[channel_id].append((method_sig, payload, content))
@@ -329,29 +378,58 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         with self._transport_lock:
             super().collect()
 
-    def drain_events(self, timeout=None):
+    def _dispatch_pending_events(self) -> int:
+        processed_frames = self._dispatch_channel_frames(self.CONNECTION_CHANNEL_ID)
+
+        me = threading.get_ident()
+        my_channels = self.channel_thread_bindings[me]
+        for channel_id in my_channels:
+            processed_frames += self._dispatch_channel_frames(channel_id)
+
+        return processed_frames
+
+    def drain_events(self, timeout=None, _nodispatch=False):
+        """Drains events from the transport and dispatches them if applicable.
+        Called each time when we expect a response from the broker or any other reaction.
+
+        :param timeout: Maximum time to wait for events to be drained. If None, wait indefinitely.
+        :type timeout: Optional[float]
+        :param _nodispatch: (internal only parameter) If True, events will not be dispatched after being drained.
+        :type _nodispatch: bool
+        :return: None
+        """
         # When all threads go here only one really drain events,
         # because this action independent of caller.
         # All events will be dispatched to their channels
 
+        if not _nodispatch:
+            dispatched = self._dispatch_pending_events()
+
+            if dispatched and timeout is None:
+                # EDGE-CASE (PART 2): previous drain_events() call skipped dispatching
+                #   e.g., for connection checking only.
+                # Now we're dropping into risk forever awaiting in below drain_events()
+                #   because all expected events are here.
+                #
+                # Return early and allow kombu to decide to call drain_events again or not.
+                # These are possible because we drain events when checking connection health.
+                return
+
         started = self._drain_guard.start_drain()
 
         if not started:
-            self._drain_guard.wait_drain_finished()
+            self._drain_guard.wait_drain_finished(timeout=timeout)
         else:
             try:
                 with self._transport_lock:
                     super().drain_events(timeout=timeout)
 
             finally:
-                self._drain_guard.finish_drain()
+                _, exc, _ = sys.exc_info()
+                self._drain_guard.finish_drain(exc=exc)
 
-        self._dispatch_channel_frames(self.CONNECTION_CHANNEL_ID)
-
-        me = threading.get_ident()
-        my_channels = self.channel_thread_bindings[me]
-        for channel_id in my_channels:
-            self._dispatch_channel_frames(channel_id)
+        if not _nodispatch:
+            self._dispatch_pending_events()
 
 
 class LoggingLock:
@@ -438,7 +516,9 @@ class KombuConnection(kombu.Connection):
         super().__init__(*args, **kwargs)
 
     @classmethod
-    def from_kombu_connection(cls, connection: kombu.Connection, **kwargs) -> "KombuConnection":
+    def from_kombu_connection(
+        cls, connection: kombu.Connection, **kwargs
+    ) -> "KombuConnection":
         """Clone kombu.Connection as new KombuConnection instance."""
         # implementation copied from `kombu.Connection.clone()` method
         return cls(**dict(connection._info(resolve=False)), **kwargs)
@@ -462,7 +542,13 @@ class KombuConnection(kombu.Connection):
         from .simple import SimpleQueue
 
         return SimpleQueue(
-            channel or self, name, no_ack, queue_opts, queue_args, exchange_opts, **kwargs
+            channel or self,
+            name,
+            no_ack,
+            queue_opts,
+            queue_args,
+            exchange_opts,
+            **kwargs,
         )
 
     def SimpleBuffer(
@@ -478,7 +564,13 @@ class KombuConnection(kombu.Connection):
         from .simple import SimpleBuffer
 
         return SimpleBuffer(
-            channel or self, name, no_ack, queue_opts, queue_args, exchange_opts, **kwargs
+            channel or self,
+            name,
+            no_ack,
+            queue_opts,
+            queue_args,
+            exchange_opts,
+            **kwargs,
         )
 
     def get_transport_cls(self):
@@ -522,8 +614,19 @@ class KombuConnection(kombu.Connection):
             )
             if connected:
                 try:
-                    self._connection.drain_events(timeout=0)
-                except socket.timeout:
+                    # SIDE EFFECT (PART 1):
+                    # Kombu typically calls `drain_events()` only after transport actions (e.g., `send_method()`).
+                    # We use it here strictly to check socket liveness (socket.timeout confirms the socket is readable).
+                    #
+                    # However, if we use the default `_nodispatch=False`, we might silently read and process frames
+                    # that the calling context expects. Since Kombu often checks this property before calling
+                    # `drain_events()`, consuming the event here could cause the subsequent `drain_events(timeout=None)`
+                    # to wait indefinitely for an event that was already handled.
+                    #
+                    # This side effect is the origin of EDGE-CASE (PART 2). See `drain_events()` comments for details.
+
+                    self._connection.drain_events(timeout=0, _nodispatch=True)
+                except TimeoutError:
                     pass
                 except self.connection_errors:
                     connected = False

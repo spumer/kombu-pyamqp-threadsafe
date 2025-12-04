@@ -17,8 +17,8 @@ update_changelog_on_bump = true
 version_provider = "poetry"
 
 [tool.poetry.dependencies]  # https://python-poetry.org/docs/dependency-specification/
-python = ">=3.8,<4.0"
-kombu = "^5.3.5"
+python = ">=3.10,<4.0"
+kombu = "^5.6.1"
 
 [tool.poetry.group.test.dependencies]  # https://python-poetry.org/docs/master/managing-dependencies/
 commitizen = ">=3.2.1"
@@ -36,6 +36,7 @@ ruff = ">=0.2.1"
 cruft = ">=2.14.0"
 ipykernel = ">=6.29.2"
 pdoc = ">=13.1.1"
+pytest-mock = "^3.15.1"
 
 [tool.coverage.report]  # https://coverage.readthedocs.io/en/latest/config.html#report
 precision = 1
@@ -52,7 +53,7 @@ source = ["src"]
 output = "reports/coverage.xml"
 
 [tool.mypy]  # https://mypy.readthedocs.io/en/latest/config_file.html
-python_version = "3.8"
+python_version = "3.10"
 junit_xml = "reports/mypy.xml"
 ignore_missing_imports = true
 pretty = true
@@ -62,6 +63,7 @@ show_error_context = true
 warn_unreachable = true
 
 [tool.pytest.ini_options]  # https://docs.pytest.org/en/latest/reference/reference.html#ini-options-ref
+pythonpath = ["src"]
 addopts = "--color=yes --doctest-modules --exitfirst --failed-first --verbosity=2 --junitxml=reports/pytest.xml"
 testpaths = ["src", "tests"]
 xfail_strict = true
@@ -70,7 +72,7 @@ xfail_strict = true
 fix = true
 line-length = 100
 src = ["src", "tests"]
-target-version = "py38"
+target-version = "py310"
 
 [tool.ruff.lint]
 ignore-init-module-imports = true
