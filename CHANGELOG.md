@@ -1,3 +1,14 @@
+## v0.6.0 (2025-12-04)
+
+### Feat
+
+- propagate exception from drain-thread to waiter-threads
+
+### Fix
+
+- **ThreadSafeChannel**: prevent double-release race condition in close/collect
+- **connection**: no more potential deadlock in tests, when you have only one source of events - your test; py3.9 dropped
+
 ## v0.5.1 (2024-11-01)
 
 ### Fix
