@@ -42,9 +42,7 @@ SEQUENTIAL_HANDOFF_THREADS = 3  # Number of threads for sequential handoff test
 # ====================
 
 
-def collect_thread_results(
-    threads: list[PropagatingThread], timeout: float = 1.0
-) -> list:
+def collect_thread_results(threads: list[PropagatingThread], timeout: float = 1.0) -> list:
     """Join threads and collect return values.
 
     Args:
@@ -61,9 +59,7 @@ def collect_thread_results(
     for idx, thread in enumerate(threads):
         thread.join(timeout=timeout)
         if thread.is_alive():
-            pytest.fail(
-                f"Test design error: thread {idx} did not complete in {timeout}s"
-            )
+            pytest.fail(f"Test design error: thread {idx} did not complete in {timeout}s")
         results.append(thread.ret)
     return results
 
@@ -106,8 +102,7 @@ def assert_elapsed_time_within(
     upper = expected + tolerance
     ctx = f" ({context})" if context else ""
     assert lower <= elapsed <= upper, (
-        f"Elapsed time {elapsed:.3f}s outside expected range "
-        f"[{lower:.3f}s, {upper:.3f}s]{ctx}"
+        f"Elapsed time {elapsed:.3f}s outside expected range [{lower:.3f}s, {upper:.3f}s]{ctx}"
     )
 
 
@@ -182,9 +177,7 @@ class TestSingleThreadedBehavior:
         assert result is True
         guard.finish_drain()
 
-    def test_finish_drain_without_start_raises_assertion(
-        self, guard: DrainGuard
-    ) -> None:
+    def test_finish_drain_without_start_raises_assertion(self, guard: DrainGuard) -> None:
         """Verify assertion fires when finishing non-existent drain.
 
         Calling finish_drain() without prior start_drain() should raise
@@ -202,13 +195,11 @@ class TestSingleThreadedBehavior:
         """
         elapsed, _ = measure_elapsed_time(guard.wait_drain_finished, timeout=1.0)
 
-        assert (
-            elapsed < IMMEDIATE_RETURN_THRESHOLD
-        ), f"Expected immediate return, took {elapsed:.3f}s"
+        assert elapsed < IMMEDIATE_RETURN_THRESHOLD, (
+            f"Expected immediate return, took {elapsed:.3f}s"
+        )
 
-    def test_wait_self_deadlock_detection_raises_assertion(
-        self, guard: DrainGuard
-    ) -> None:
+    def test_wait_self_deadlock_detection_raises_assertion(self, guard: DrainGuard) -> None:
         """Verify assertion prevents thread from waiting for itself.
 
         When a thread that started drain tries to wait for itself:
@@ -217,9 +208,7 @@ class TestSingleThreadedBehavior:
         """
         guard.start_drain()
 
-        with pytest.raises(
-            AssertionError, match="You can not wait your own; deadlock detected"
-        ):
+        with pytest.raises(AssertionError, match="You can not wait your own; deadlock detected"):
             guard.wait_drain_finished()
 
         # Cleanup
@@ -291,12 +280,12 @@ class TestMultiThreadedRaceConditions:
             true_count = sum(1 for _, r in results if r)
             false_count = sum(1 for _, r in results if not r)
 
-            assert (
-                true_count == 1
-            ), f"Iteration {iteration}: expected exactly 1 winner, got {true_count}"
-            assert (
-                false_count == n_threads - 1
-            ), f"Iteration {iteration}: expected {n_threads - 1} losers, got {false_count}"
+            assert true_count == 1, (
+                f"Iteration {iteration}: expected exactly 1 winner, got {true_count}"
+            )
+            assert false_count == n_threads - 1, (
+                f"Iteration {iteration}: expected {n_threads - 1} losers, got {false_count}"
+            )
 
             # Drain should be inactive after iteration
             assert guard.is_drain_active() is False
@@ -550,9 +539,9 @@ class TestEdgeCasesAndErrors:
         t1.join(timeout=thread_timeout)
 
         # Verify immediate return (polling behavior)
-        assert (
-            elapsed_time[0] < POLL_RETURN_THRESHOLD
-        ), f"Expected immediate return, took {elapsed_time[0]:.3f}s"
+        assert elapsed_time[0] < POLL_RETURN_THRESHOLD, (
+            f"Expected immediate return, took {elapsed_time[0]:.3f}s"
+        )
 
     def test_reentrancy_check_rlock_behavior(self, guard: DrainGuard) -> None:
         """Verify RLock allows reentrancy but assertion prevents double-drain.
@@ -649,8 +638,7 @@ class TestIntegrationPatterns:
                     guard.finish_drain()
 
         threads = [
-            PropagatingThread(target=simulate_drain_events, args=(i,))
-            for i in range(n_threads)
+            PropagatingThread(target=simulate_drain_events, args=(i,)) for i in range(n_threads)
         ]
 
         for t in threads:
@@ -669,9 +657,9 @@ class TestIntegrationPatterns:
         waited_count = sum(1 for _, action in completed if action == "waited")
 
         assert drained_count == 1, f"Expected 1 drainer, got {drained_count}"
-        assert (
-            waited_count == n_threads - 1
-        ), f"Expected {n_threads - 1} waiters, got {waited_count}"
+        assert waited_count == n_threads - 1, (
+            f"Expected {n_threads - 1} waiters, got {waited_count}"
+        )
 
         # Final state should be inactive
         assert guard.is_drain_active() is False
