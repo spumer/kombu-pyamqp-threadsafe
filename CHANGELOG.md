@@ -1,3 +1,9 @@
+## v0.6.1 (2025-12-07)
+
+### Fix
+
+- no more get old exception when wait drain (race condition); + propagate only connection errors + performance improvement
+
 ## v0.6.0 (2025-12-04)
 
 ### Feat
