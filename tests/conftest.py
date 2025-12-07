@@ -6,6 +6,11 @@ import kombu.resource
 import pytest
 from kombu.utils.functional import lazy
 
+pytest_plugins = [
+    "tests.benchmarks.fixtures.metrics",
+    "tests.benchmarks.fixtures.toxiproxy",
+]
+
 
 @pytest.fixture
 def rabbitmq_username():

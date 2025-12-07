@@ -2,6 +2,8 @@ import threading
 
 
 class PropagatingThread(threading.Thread):
+    """Thread that propagates exceptions to the joining thread."""
+
     def run(self):
         self.exc = None
         self.ret = None
