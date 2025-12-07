@@ -1,0 +1,105 @@
+site_name: kombu-pyamqp-threadsafe Benchmarks
+site_description: Performance and reliability benchmarks for kombu-pyamqp-threadsafe
+site_url: https://spumer.github.io/kombu-pyamqp-threadsafe/
+
+repo_name: spumer/kombu-pyamqp-threadsafe
+repo_url: https://github.com/spumer/kombu-pyamqp-threadsafe
+
+theme:
+  name: material
+  language: en
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - charts
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+          build: true
+        - locale: ru
+          name: Русский
+          build: true
+          nav_translations:
+            Home: Главная
+            Benchmarks: Бенчмарки
+            Overview: Обзор
+            Throughput: Пропускная способность
+            Scalability: Масштабируемость
+            Recovery: Восстановление
+            Stability: Стабильность
+            Results: Результаты
+            Latest Results: Последние результаты
+            Reproduce: Воспроизведение
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: vegalite
+          class: vegalite
+          format: !!python/name:mkdocs_charts_plugin.fences.fence_vegalite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.arithmatex:
+      generic: true
+  - admonition
+  - pymdownx.details
+  - attr_list
+  - md_in_html
+  - tables
+  - def_list
+  - footnotes
+
+extra_css:
+  - assets/css/custom.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+  - https://cdn.jsdelivr.net/npm/vega@5
+  - https://cdn.jsdelivr.net/npm/vega-lite@5
+  - https://cdn.jsdelivr.net/npm/vega-embed@6
+
+nav:
+  - Home: index.md
+  - Benchmarks:
+      - Overview: benchmarks/index.md
+      - Throughput: benchmarks/throughput.md
+      - Scalability: benchmarks/scalability.md
+      - Recovery: benchmarks/recovery.md
+      - Stability: benchmarks/stability.md
+  - Results:
+      - Latest Results: results/index.md
+  - Reproduce: reproduce.md

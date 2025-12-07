@@ -1,0 +1,146 @@
+/* Custom styles for kombu-pyamqp-threadsafe benchmarks */
+
+:root {
+  --md-primary-fg-color: #7c3aed;
+  --md-primary-fg-color--light: #a78bfa;
+  --md-primary-fg-color--dark: #5b21b6;
+  --md-accent-fg-color: #f59e0b;
+}
+
+/* Metric cards */
+.metric-card {
+  background: var(--md-code-bg-color);
+  border-radius: 8px;
+  padding: 1rem;
+  margin: 0.5rem 0;
+  border-left: 4px solid var(--md-primary-fg-color);
+}
+
+.metric-card h4 {
+  margin: 0 0 0.5rem 0;
+  color: var(--md-primary-fg-color);
+}
+
+.metric-card .value {
+  font-size: 2rem;
+  font-weight: bold;
+  color: var(--md-typeset-color);
+}
+
+.metric-card .unit {
+  font-size: 0.875rem;
+  color: var(--md-typeset-color--light);
+}
+
+/* Table improvements */
+.md-typeset table:not([class]) {
+  font-size: 0.8rem;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--md-primary-fg-color);
+  color: white;
+}
+
+/* Status badges */
+.badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: bold;
+}
+
+.badge--success {
+  background-color: #22c55e;
+  color: white;
+}
+
+.badge--warning {
+  background-color: #f59e0b;
+  color: white;
+}
+
+.badge--error {
+  background-color: #ef4444;
+  color: white;
+}
+
+/* Chart containers */
+.vegalite {
+  margin: 1rem 0;
+  overflow-x: auto;
+}
+
+/* Code blocks in tables */
+.md-typeset table code {
+  padding: 0.1rem 0.3rem;
+  font-size: 0.75rem;
+}
+
+/* Admonition customization */
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-color: #22c55e;
+}
+
+.md-typeset .tip > .admonition-title,
+.md-typeset .tip > summary {
+  background-color: rgba(34, 197, 94, 0.1);
+}
+
+/* Navigation improvements */
+.md-nav__item--active > .md-nav__link {
+  font-weight: bold;
+}
+
+/* Results page styling */
+.results-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  margin: 1rem 0;
+}
+
+.results-summary .card {
+  background: var(--md-code-bg-color);
+  border-radius: 8px;
+  padding: 1.5rem;
+  text-align: center;
+}
+
+.results-summary .card .number {
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: var(--md-primary-fg-color);
+}
+
+.results-summary .card .label {
+  font-size: 0.875rem;
+  color: var(--md-typeset-color--light);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Health check styling */
+.health-check {
+  list-style: none;
+  padding: 0;
+}
+
+.health-check li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.health-check li:before {
+  content: "✓";
+  color: #22c55e;
+  font-weight: bold;
+  margin-right: 0.5rem;
+}
+
+.health-check li.fail:before {
+  content: "✗";
+  color: #ef4444;
+}
