@@ -102,7 +102,7 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         self._owner_ident = threading.get_ident()
         self._channel_pool: weakref.ReferenceType[ThreadSafeChannel] | None = None
         self._is_releasing = False
-        self.connection.channel_thread_bindings[self._owner_ident].append(self.channel_id)
+        self.connection.channel_thread_bindings[self._owner_ident].add(self.channel_id)
 
     def _bind_to_pool(self, channel_pool: "ThreadSafeChannelPool"):
         self._channel_pool = weakref.ref(channel_pool)
@@ -123,11 +123,15 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         return self.is_open
 
     def change_owner(self, new_owner):
+        conn = self.connection
+        if conn is None:
+            raise RecoverableConnectionError("connection already closed")
+
         prev_owner = self._owner_ident
         self._owner_ident = new_owner
-        bindings = self.connection.channel_thread_bindings
-        bindings[prev_owner].remove(self.channel_id)
-        bindings[new_owner].append(self.channel_id)
+        bindings = conn.channel_thread_bindings
+        bindings[prev_owner].discard(self.channel_id)
+        bindings[new_owner].add(self.channel_id)
 
     def wait(self, *args, **kwargs):
         thread_ident = threading.get_ident()
@@ -153,9 +157,9 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
                 len(channel_frame_buff),
             )
 
-        bindings = conn.channel_thread_bindings.get(self._owner_ident) or []
-        with contextlib.suppress(ValueError):
-            bindings.remove(self.channel_id)
+        bindings = conn.channel_thread_bindings.get(self._owner_ident)
+        if bindings is not None:
+            bindings.discard(self.channel_id)
 
         # Detach from pool before calling super().collect() to prevent re-entrant calls
         # super().collect() may trigger events that call close() again
@@ -306,14 +310,14 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
 
         self._create_channel_lock = threading.RLock()
         self._drain_guard = DrainGuard()
-        self.channel_thread_bindings = collections.defaultdict(
-            list
-        )  # thread_ident -> [channel_id, ...]
+        self.channel_thread_bindings: collections.defaultdict[int, set[int]] = collections.defaultdict(
+            set
+        )  # thread_ident -> {channel_id, ...}
         self.channel_frame_buff = collections.defaultdict(
             collections.deque
         )  # channel_id: [frame, frame, ...]
 
-        self.channel_thread_bindings[threading.get_ident()].append(self.CONNECTION_CHANNEL_ID)
+        self.channel_thread_bindings[threading.get_ident()].add(self.CONNECTION_CHANNEL_ID)
         super().__init__(*args, **kwargs)
 
     def channel(self, *args, **kwargs):
@@ -414,7 +418,7 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         processed_frames = self._dispatch_connection_events()
         me = threading.get_ident()
         my_channels = self.channel_thread_bindings[me]
-        for channel_id in my_channels:
+        for channel_id in tuple(my_channels):
             processed_frames += self._dispatch_channel_frames(channel_id)
 
         return processed_frames
