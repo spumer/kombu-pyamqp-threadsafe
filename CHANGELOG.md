@@ -1,3 +1,9 @@
+## v0.6.2 (2025-12-23)
+
+### Fix
+
+- resolve race conditions in channel_thread_bindings
+
 ## v0.6.1 (2025-12-07)
 
 ### Fix
