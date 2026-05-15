@@ -754,6 +754,21 @@ class KombuConnection(kombu.Connection):
 
     def collect(self, *args, **kwargs):
         with self._transport_lock:
+            # Release all outstanding pool channels BEFORE transport tear-down.
+            # Connection.ensure() invokes collect() -> _ensure_connection ->
+            # revive(default) on recoverable errors. Without this cleanup, pool
+            # channels become zombies:
+            #   - rabbit still sees them as open (no channel.close frame sent),
+            #   - we lose references (Producer.revive replaces self._channel),
+            #   - pool discards them on release(is_usable=False), silently losing
+            #     the slot until rabbit's channel-limit is reached.
+            # force_close_all(close_pool=False) calls channel.collect() on every
+            # channel in _dirty and _resource, sending channel.close frame while
+            # the transport is still alive, and leaves the pool usable for
+            # subsequent acquires on the new transport.
+            pool = self._default_channel_pool
+            if pool is not None and not pool.closed:
+                pool.force_close_all(close_pool=False)
             super().collect(*args, **kwargs)
 
     def _connection_factory(self):

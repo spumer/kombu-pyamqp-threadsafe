@@ -369,3 +369,71 @@ class TestSelectiveExceptionPropagationRegression:
         assert len(operations_completed) > 0, (
             f"At least some operations should complete, errors: {errors}"
         )
+
+
+# ====================
+# Pool Channel Leak Regression (tochka-esb-tools issue #26)
+# ====================
+
+
+class TestCollectReleasesPoolChannels:
+    """Regression tests for outstanding pool channels on Connection.collect().
+
+    Background: Connection.ensure() calls collect() before _ensure_connection
+    on recoverable errors, then revive(default_channel) on the obj passed in.
+    If the obj is a pool-acquired Producer, Producer.revive replaces
+    self._channel with default_channel. The original pool channel loses its
+    reference; pool.release(is_usable=False) then discards it silently —
+    rabbit, however, still sees it as open until rabbit's channel-limit is
+    reached.
+
+    Fix: KombuConnection.collect() calls pool.force_close_all(close_pool=False)
+    before super().collect(), sending channel.close frames while the transport
+    is still alive.
+    """
+
+    def test_collect_force_closes_outstanding_pool_channels(
+        self, multi_channel_connection
+    ) -> None:
+        """Verify Connection.collect() closes channels in pool._dirty.
+
+        Without the fix, channels would remain open on rabbit's side until
+        rabbit's per-connection channel-limit is hit.
+        """
+        conn = multi_channel_connection
+        pool = conn.default_channel_pool
+
+        # Acquire and keep strong refs to prevent weakref-based GC clearing _dirty.
+        ch1 = pool.acquire(block=False)
+        ch2 = pool.acquire(block=False)
+        assert ch1.is_open
+        assert ch2.is_open
+        assert ch1 in pool._dirty
+        assert ch2 in pool._dirty
+
+        # collect() simulates what Connection.ensure() does on recoverable error,
+        # before invoking obj.revive(default_channel).
+        conn.collect()
+
+        # Channels closed (channel.close frame sent while transport was alive).
+        assert not ch1.is_open
+        assert not ch2.is_open
+        # Pool drained, but not closed — ready for new acquires after reconnect.
+        assert len(pool._dirty) == 0
+        assert pool._resource.qsize() == 0
+        assert not pool.closed
+
+    def test_pool_usable_after_collect(self, multi_channel_connection) -> None:
+        """After collect() pool serves fresh channels on the new transport."""
+        conn = multi_channel_connection
+        pool = conn.default_channel_pool
+
+        _ = pool.acquire(block=False)
+        conn.collect()
+
+        # Pool reusable: ensure_connection re-establishes transport,
+        # acquire creates a fresh channel on the new connection.
+        conn.ensure_connection()
+        new_ch = pool.acquire(block=False)
+        assert new_ch.is_open
+        assert new_ch in pool._dirty
