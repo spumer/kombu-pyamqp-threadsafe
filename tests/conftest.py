@@ -14,12 +14,12 @@ pytest_plugins = [
 
 @pytest.fixture
 def rabbitmq_username():
-    return "guest"
+    return os.getenv("PYTEST_RABBITMQ_USER", "guest")
 
 
 @pytest.fixture
 def rabbitmq_password():
-    return "guest"
+    return os.getenv("PYTEST_RABBITMQ_PASS", "guest")
 
 
 @pytest.fixture
