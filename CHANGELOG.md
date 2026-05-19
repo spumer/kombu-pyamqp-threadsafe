@@ -1,3 +1,9 @@
+## v0.6.3 (2026-05-19)
+
+### Fix
+
+- **KombuConnection**: release outstanding pool channels in collect()
+
 ## v0.6.2 (2025-12-23)
 
 ### Fix
