@@ -372,6 +372,72 @@ class TestSelectiveExceptionPropagationRegression:
 
 
 # ====================
+# Parallel Teardown Regression (KombuConnection.ensure fork)
+# ====================
+
+
+class TestParallelEnsureRecovery:
+    """End-to-end: one real socket close + N threads recovering through
+    ensure() converge on a single new connection (no reconnect ping-pong).
+
+    The stale-error window itself needs scheduling a real socket close rarely
+    hits; deterministic coverage of the ensure() fork lives in
+    test_connection_ensure.py. This test pins the convergence invariant
+    under real concurrency.
+    """
+
+    @pytest.mark.parametrize("n_threads", [8])
+    def test_one_socket_close_causes_one_reconnect(
+        self, multi_channel_connection, queue_name, n_threads: int, mocker
+    ) -> None:
+        connection = multi_channel_connection
+
+        # Establish and declare upfront.
+        kombu_pyamqp_threadsafe.kombu.Queue(queue_name, channel=connection).declare()
+        assert connection.connected
+
+        factory_spy = mocker.patch.object(
+            connection, "_connection_factory", wraps=connection._connection_factory
+        )
+
+        close_transport(connection)
+
+        def worker():
+            def declare_queue():
+                # Fresh pool channel per attempt: one channel per thread (the
+                # library's ownership model), and no stale channels between
+                # retries — the test targets the ensure() race itself.
+                ch = connection.default_channel_pool.acquire(block=True, timeout=5)
+                try:
+                    kombu_pyamqp_threadsafe.kombu.Queue(queue_name, channel=ch).declare()
+                finally:
+                    ch.release()
+
+            ensured = connection.ensure(
+                connection,
+                declare_queue,
+                max_retries=10,
+                interval_start=0,
+                interval_step=0,
+                interval_max=0.05,
+            )
+            for _ in range(3):
+                ensured()
+
+        threads = [PropagatingThread(target=worker) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        collect_thread_results(threads)
+
+        assert connection.connected
+        assert factory_spy.call_count == 1, (
+            f"one socket close must cause exactly one reconnect, "
+            f"got {factory_spy.call_count} "
+            "(reconnect ping-pong: stale errors tore down live replacements)"
+        )
+
+
+# ====================
 # Pool Channel Leak Regression (tochka-esb-tools issue #26)
 # ====================
 
@@ -392,9 +458,7 @@ class TestCollectReleasesPoolChannels:
     is still alive.
     """
 
-    def test_collect_force_closes_outstanding_pool_channels(
-        self, multi_channel_connection
-    ) -> None:
+    def test_collect_force_closes_outstanding_pool_channels(self, multi_channel_connection) -> None:
         """Verify Connection.collect() closes channels in pool._dirty.
 
         Without the fix, channels would remain open on rabbit's side until

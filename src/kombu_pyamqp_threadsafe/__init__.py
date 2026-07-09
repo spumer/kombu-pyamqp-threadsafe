@@ -5,12 +5,12 @@ import contextlib
 import functools
 import logging
 import os
-import socket
 import ssl
 import threading
 import time
 import typing
 import weakref
+from itertools import count
 
 import amqp
 import amqp.transport
@@ -20,7 +20,8 @@ import kombu.resource
 import kombu.simple
 import kombu.transport
 import kombu.transport.pyamqp
-from amqp import RecoverableConnectionError
+from amqp import RecoverableConnectionError, spec
+from amqp.exceptions import RecoverableChannelError
 
 if typing.TYPE_CHECKING:
     from kombu.transport.virtual import Channel
@@ -102,6 +103,7 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         self._owner_ident = threading.get_ident()
         self._channel_pool: weakref.ReferenceType[ThreadSafeChannel] | None = None
         self._is_releasing = False
+        self._coordinator = ChannelCoordinator()
         self.connection.channel_thread_bindings[self._owner_ident].add(self.channel_id)
 
     def _bind_to_pool(self, channel_pool: "ThreadSafeChannelPool"):
@@ -139,17 +141,21 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
         if thread_ident != self._owner_ident:
             self.change_owner(thread_ident)
 
-        try:
+        with channel_operation(self):
             return super().wait(*args, **kwargs)
-        except AttributeError as exc:
-            if (
-                not self.connection
-                and str(exc) == "AttributeError: 'NoneType' object has no attribute 'drain_events'"
-            ):
-                raise RecoverableConnectionError("connection already closed") from None
 
     def collect(self):
         conn = self.connection
+
+        # Let active operations drain before nulling self.connection. On
+        # timeout we proceed anyway: a stuck publisher then sees OSError from
+        # frame_writer (recoverable), never AttributeError.
+        if not self._coordinator.begin_teardown():
+            logger.warning(
+                "channel %s teardown timeout: operations still active",
+                self.channel_id,
+            )
+
         channel_frame_buff = conn.channel_frame_buff.pop(self.channel_id, ())
         if channel_frame_buff:
             logger.warning(
@@ -208,6 +214,140 @@ class ThreadSafeChannel(kombu.transport.pyamqp.Channel):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Return channel to ChannelPool, if it's acquired before, otherwise it will be closed."""
         self.release()
+
+    def _basic_publish(
+        self,
+        msg,
+        exchange="",
+        routing_key="",
+        mandatory=False,
+        immediate=False,
+        timeout=None,
+        confirm_timeout=None,
+        argsig="Bssbb",
+    ):
+        # Mirrors amqp.Channel._basic_publish, but reads through the snapshot
+        # `conn`: a concurrent teardown can null self.connection mid-publish,
+        # and the resulting AttributeError is not retried by kombu.
+        with channel_operation(self) as conn:
+            # Raw _transport (as frame_writer reads it): the `transport`
+            # property force-connects when it is None (deprecated amqp
+            # behavior), resurrecting the connection mid-teardown instead
+            # of failing fast.
+            transport = conn._transport
+            if transport is None:
+                raise RecoverableConnectionError("basic_publish: transport closed")
+
+            capabilities = conn.client_properties.get("capabilities", {})
+            if capabilities.get("connection.blocked", False):
+                try:
+                    conn.drain_events(timeout=0)
+                except TimeoutError:
+                    pass
+
+            try:
+                with transport.having_timeout(timeout):
+                    return self.send_method(
+                        spec.Basic.Publish,
+                        argsig,
+                        (0, exchange, routing_key, mandatory, immediate),
+                        msg,
+                    )
+            except TimeoutError:
+                raise RecoverableChannelError("basic_publish: timed out")
+
+    basic_publish = _basic_publish
+
+    # Wrappers that route every channel method touching self.connection
+    # through channel_operation, so concurrent teardown cannot race them.
+
+    def basic_get(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().basic_get(*args, **kwargs)
+
+    def basic_ack(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().basic_ack(*args, **kwargs)
+
+    def basic_reject(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().basic_reject(*args, **kwargs)
+
+    def basic_recover_async(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().basic_recover_async(*args, **kwargs)
+
+    def basic_recover(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().basic_recover(*args, **kwargs)
+
+    def basic_qos(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().basic_qos(*args, **kwargs)
+
+    def basic_consume(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().basic_consume(*args, **kwargs)
+
+    def basic_cancel(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().basic_cancel(*args, **kwargs)
+
+    def queue_declare(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().queue_declare(*args, **kwargs)
+
+    def queue_bind(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().queue_bind(*args, **kwargs)
+
+    def queue_unbind(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().queue_unbind(*args, **kwargs)
+
+    def queue_purge(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().queue_purge(*args, **kwargs)
+
+    def queue_delete(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().queue_delete(*args, **kwargs)
+
+    def exchange_declare(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().exchange_declare(*args, **kwargs)
+
+    def exchange_delete(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().exchange_delete(*args, **kwargs)
+
+    def exchange_bind(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().exchange_bind(*args, **kwargs)
+
+    def exchange_unbind(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().exchange_unbind(*args, **kwargs)
+
+    def confirm_select(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().confirm_select(*args, **kwargs)
+
+    def tx_select(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().tx_select(*args, **kwargs)
+
+    def tx_commit(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().tx_commit(*args, **kwargs)
+
+    def tx_rollback(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().tx_rollback(*args, **kwargs)
+
+    def flow(self, *args, **kwargs):
+        with channel_operation(self):
+            return super().flow(*args, **kwargs)
 
 
 class DrainGuard:
@@ -296,6 +436,107 @@ class DrainGuard:
                     raise self._drain_exc
 
 
+CHANNEL_TEARDOWN_WAIT_S: float = 0.5
+
+
+class ChannelCoordinator:
+    """Counts active operations per channel — operations that entered a critical
+    section (enter_operation) but have not left it yet (exit_operation) — so
+    begin_teardown() can wait for them to drain before self.connection is
+    nulled; operations started after teardown is marked are rejected.
+
+    Mark and count share one lock, so an operation racing teardown is reliably
+    rejected rather than slipping in.
+    """
+
+    def __init__(self, teardown_wait_s: float = CHANNEL_TEARDOWN_WAIT_S):
+        self._cond = threading.Condition(lock=threading.RLock())
+        self._active_operations: int = 0
+        self._marked_for_teardown: bool = False
+        self._teardown_wait_s = teardown_wait_s
+
+    @property
+    def active_operations(self) -> int:
+        """Number of operations currently between enter_operation and
+        exit_operation. Diagnostics only: stale the moment the lock releases.
+        """
+        with self._cond:
+            return self._active_operations
+
+    @property
+    def marked_for_teardown(self) -> bool:
+        """Diagnostics only. The value is stale the moment the lock releases."""
+        with self._cond:
+            return self._marked_for_teardown
+
+    def enter_operation(self) -> None:
+        with self._cond:
+            if self._marked_for_teardown:
+                raise RecoverableConnectionError("channel teardown in progress")
+            self._active_operations += 1
+
+    def exit_operation(self) -> None:
+        with self._cond:
+            self._active_operations -= 1
+            if self._active_operations == 0 and self._marked_for_teardown:
+                self._cond.notify_all()
+
+    def begin_teardown(self) -> bool:
+        """Mark teardown and wait until active_operations reaches 0. Return True
+        if it drained within the timeout (or was already 0, or teardown was
+        already marked), False if the timeout expired with operations still
+        active.
+
+        A second caller, arriving after teardown is already marked, returns True
+        at once instead of waiting on a drain the first caller already owns.
+        """
+        with self._cond:
+            if self._marked_for_teardown:
+                return True
+            self._marked_for_teardown = True
+            return self._cond.wait_for(
+                lambda: self._active_operations == 0,
+                timeout=self._teardown_wait_s,
+            )
+
+
+class ChannelOperation:
+    """Critical section over channel.connection: yields the connection read
+    once, and the reference stays valid for the whole block — teardown waits
+    for active operations.
+
+    A plain class, not @contextmanager: no generator overhead on every publish.
+    """
+
+    __slots__ = ("_channel", "_coord")
+
+    def __init__(self, channel: ThreadSafeChannel):
+        self._channel: ThreadSafeChannel = channel
+        self._coord: ChannelCoordinator | None = None
+
+    def __enter__(self):
+        conn = self._channel.connection
+        if conn is None:
+            raise RecoverableConnectionError("channel already closed")
+        if conn.marked_for_teardown:
+            raise RecoverableConnectionError("connection teardown in progress")
+
+        coord = self._channel._coordinator
+        coord.enter_operation()
+        self._coord = coord
+        return conn
+
+    def __exit__(self, exc_type, exc, tb):
+        coord = self._coord
+        if coord is not None:
+            coord.exit_operation()
+            self._coord = None
+        return False
+
+
+channel_operation = ChannelOperation
+
+
 class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
     _transport: amqp.transport.TCPTransport
 
@@ -310,8 +551,9 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
 
         self._create_channel_lock = threading.RLock()
         self._drain_guard = DrainGuard()
-        self.channel_thread_bindings: collections.defaultdict[int, set[int]] = collections.defaultdict(
-            set
+        self._teardown_event = threading.Event()
+        self.channel_thread_bindings: collections.defaultdict[int, set[int]] = (
+            collections.defaultdict(set)
         )  # thread_ident -> {channel_id, ...}
         self.channel_frame_buff = collections.defaultdict(
             collections.deque
@@ -489,6 +731,19 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
             # Dispatch events received during this drain_events() call
             self._dispatch_pending_events()
 
+    @property
+    def marked_for_teardown(self) -> bool:
+        """True once this connection has been marked for teardown. Publishers
+        read it to fail instead of touching a connection under destruction.
+        """
+        return self._teardown_event.is_set()
+
+    def mark_for_teardown(self) -> None:
+        """Mark this connection for teardown. One-way and irreversible: the flag
+        stays set until the connection is destroyed.
+        """
+        self._teardown_event.set()
+
 
 class LoggingLock:
     def __init__(self, lock, name=None, threshold=0.01):
@@ -569,6 +824,7 @@ class KombuConnection(kombu.Connection):
             transport_lock = LoggingLock(transport_lock, name="TransportLock")
 
         self._transport_lock = transport_lock
+        self._teardown_lock = threading.Lock()
         self._default_channel_pool: ThreadSafeChannelPool | None = None
         self._default_channel_pool_size = default_channel_pool_size
         super().__init__(*args, **kwargs)
@@ -752,24 +1008,117 @@ class KombuConnection(kombu.Connection):
         with self._transport_lock:
             return super()._ensure_connection(*args, **kwargs)
 
+    def ensure(
+        self,
+        obj,
+        fun,
+        errback=None,
+        max_retries=None,
+        interval_start=1,
+        interval_step=1,
+        interval_max=1,
+        on_revive=None,
+        retry_errors=None,
+    ):
+        """Fork of kombu.Connection.ensure() with one behavioral change:
+        collect() only the connection the failing attempt actually saw.
+
+        Upstream collects unconditionally on conn_errors, so a thread holding
+        a stale error (its connection was already replaced by another thread's
+        reconnect) tore down the live replacement — reconnect ping-pong.
+
+        Body copied verbatim from kombu 5.6.1 except the snapshot and the
+        conditional collect.
+        """
+        if retry_errors is None:
+            retry_errors = ()
+
+        def _ensured(*args, **kwargs):
+            got_connection = 0
+            conn_errors = self.recoverable_connection_errors
+            chan_errors = self.recoverable_channel_errors
+            has_modern_errors = hasattr(
+                self.transport,
+                "recoverable_connection_errors",
+            )
+            with self._reraise_as_library_errors():
+                for retries in count(0):  # for infinity
+                    seen_connection = self._connection
+                    try:
+                        return fun(*args, **kwargs)
+                    except retry_errors as exc:
+                        if max_retries is not None and retries >= max_retries:
+                            raise
+                        self._debug("ensure retry policy error: %r", exc, exc_info=1)
+                    except conn_errors as exc:
+                        if got_connection and not has_modern_errors:
+                            # transport can not distinguish between
+                            # recoverable/irrecoverable errors, so we propagate
+                            # the error if it persists after a new connection
+                            # was successfully established.
+                            raise
+                        if max_retries is not None and retries >= max_retries:
+                            raise
+                        self._debug("ensure connection error: %r", exc, exc_info=1)
+                        # Upstream collects unconditionally; we skip when the
+                        # connection was already replaced — a stale error must
+                        # not tear down the live replacement. Unlocked check is
+                        # safe: _connection never returns to an old object.
+                        if seen_connection is not None and self._connection is seen_connection:
+                            with self._transport_lock:
+                                if self._connection is seen_connection:
+                                    self.collect()
+                        errback and errback(exc, 0)
+                        remaining_retries = None
+                        if max_retries is not None:
+                            remaining_retries = max(max_retries - retries, 1)
+                        self._ensure_connection(
+                            errback,
+                            remaining_retries,
+                            interval_start,
+                            interval_step,
+                            interval_max,
+                            reraise_as_library_errors=False,
+                        )
+                        channel = self.default_channel
+                        obj.revive(channel)
+                        if on_revive:
+                            on_revive(channel)
+                        got_connection += 1
+                    except chan_errors as exc:
+                        if max_retries is not None and retries > max_retries:
+                            raise
+                        self._debug("ensure channel error: %r", exc, exc_info=1)
+                        errback and errback(exc, 0)
+
+        _ensured.__name__ = f"{fun.__name__}(ensured)"
+        _ensured.__doc__ = fun.__doc__
+        _ensured.__module__ = fun.__module__
+        return _ensured
+
     def collect(self, *args, **kwargs):
-        with self._transport_lock:
-            # Release all outstanding pool channels BEFORE transport tear-down.
-            # Connection.ensure() invokes collect() -> _ensure_connection ->
-            # revive(default) on recoverable errors. Without this cleanup, pool
-            # channels become zombies:
-            #   - rabbit still sees them as open (no channel.close frame sent),
-            #   - we lose references (Producer.revive replaces self._channel),
-            #   - pool discards them on release(is_usable=False), silently losing
-            #     the slot until rabbit's channel-limit is reached.
-            # force_close_all(close_pool=False) calls channel.collect() on every
-            # channel in _dirty and _resource, sending channel.close frame while
-            # the transport is still alive, and leaves the pool usable for
-            # subsequent acquires on the new transport.
-            pool = self._default_channel_pool
-            if pool is not None and not pool.closed:
-                pool.force_close_all(close_pool=False)
-            super().collect(*args, **kwargs)
+        """Tear the current connection down. Does not reconnect — that is
+        _ensure_connection's job, which skips work when self.connected.
+        """
+        if not self._teardown_lock.acquire(blocking=False):
+            # Connection teardown is already in progress by another thread
+            return
+        try:
+            with self._transport_lock:
+                if self._connection is None:
+                    return
+                self._connection.mark_for_teardown()
+
+                # Close pool channels while the transport is still alive, else
+                # they leak: rabbit keeps them open (no close frame sent) and we
+                # lose the references. close_pool=False keeps the pool usable on
+                # the next transport.
+                pool = self._default_channel_pool
+                if pool is not None and not pool.closed:
+                    pool.force_close_all(close_pool=False)
+                super().collect(*args, **kwargs)
+        finally:
+            self._teardown_lock.release()
 
     def _connection_factory(self):
         with self._transport_lock:
