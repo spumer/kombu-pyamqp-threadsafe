@@ -120,13 +120,13 @@ def test_recovery_with_latency_before_failure(...)
   "height": 300,
   "data": {
     "values": [
-      {"type": "TCP RST", "metric": "Detection", "time": 0.48},
-      {"type": "TCP RST", "metric": "Propagation", "time": 513.47},
-      {"type": "TCP RST", "metric": "Full Recovery", "time": 515.63},
-      {"type": "Network Partition", "metric": "Detection", "time": 105.31},
-      {"type": "Network Partition", "metric": "Propagation", "time": 105.83},
-      {"type": "Network Partition", "metric": "Full Recovery", "time": 1530.35},
-      {"type": "Degraded + RST", "metric": "Full Recovery", "time": 517.09}
+      {"type": "TCP RST", "metric": "Detection", "time": 3.83},
+      {"type": "TCP RST", "metric": "Propagation", "time": 517.68},
+      {"type": "TCP RST", "metric": "Full Recovery", "time": 525.76},
+      {"type": "Network Partition", "metric": "Detection", "time": 106.01},
+      {"type": "Network Partition", "metric": "Propagation", "time": 107.12},
+      {"type": "Network Partition", "metric": "Full Recovery", "time": 1534.86},
+      {"type": "Degraded + RST", "metric": "Full Recovery", "time": 523.14}
     ]
   },
   "mark": "bar",
@@ -145,9 +145,9 @@ def test_recovery_with_latency_before_failure(...)
 
 | Метрика | Значение |
 |---------|----------|
-| Error Detection | -0.67 ms* |
-| Error Propagation | 513.47 ms |
-| Full Recovery | 515.63 ms |
+| Error Detection | -7.35 ms* |
+| Error Propagation | 517.68 ms |
+| Full Recovery | 525.76 ms |
 | Threads Detected | 11/50 |
 | Threads Recovered | 50/50 |
 
@@ -159,9 +159,9 @@ def test_recovery_with_latency_before_failure(...)
 
 | Метрика | Значение |
 |---------|----------|
-| Error Detection | 105.31 ms |
-| Error Propagation | 105.83 ms |
-| Full Recovery | 1530.35 ms |
+| Error Detection | 106.01 ms |
+| Error Propagation | 107.12 ms |
+| Full Recovery | 1534.86 ms |
 | Threads Detected | 50/50 |
 | Threads Recovered | 50/50 |
 
@@ -194,8 +194,8 @@ Network Partition:
 
 | Метрика | Target | Результат |
 |---------|--------|-----------|
-| TCP RST Detection | < 10ms | ✅ 0.48ms |
-| Network Partition Detection | < 200ms | ✅ 105ms |
+| TCP RST Detection | < 10ms | ✅ 3.83ms |
+| Network Partition Detection | < 200ms | ✅ 106ms |
 | Full Recovery | < 5s | ✅ 1.5s |
 
 ## Воспроизведение

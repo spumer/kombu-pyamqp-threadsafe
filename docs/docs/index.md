@@ -20,9 +20,9 @@ Comprehensive benchmark suite for evaluating performance and reliability of `kom
   "height": 200,
   "data": {
     "values": [
-      {"metric": "Peak Throughput", "value": 22547, "unit": "msg/s"},
-      {"metric": "TCP RST Recovery", "value": 0.48, "unit": "ms"},
-      {"metric": "Network Partition Recovery", "value": 9.55, "unit": "ms"},
+      {"metric": "Peak Throughput", "value": 22807, "unit": "msg/s"},
+      {"metric": "TCP RST Recovery", "value": 3.83, "unit": "ms"},
+      {"metric": "Network Partition Recovery", "value": 17.97, "unit": "ms"},
       {"metric": "Max Concurrent Consumers", "value": 900, "unit": "threads"}
     ]
   },

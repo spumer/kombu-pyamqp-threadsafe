@@ -165,6 +165,8 @@ def run_benchmarks(quick: bool = False) -> tuple[int, int, float]:
         sys.executable,
         "-m",
         "pytest",
+        "-m",
+        "benchmark",
         str(BENCHMARK_DIR),
         "-v",
         "--tb=short",

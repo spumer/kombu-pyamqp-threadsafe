@@ -74,20 +74,20 @@ traffic = [
 
 | Consumers | Messages | Throughput | Startup | P50 | P99 | Loss |
 |-----------|----------|------------|---------|-----|-----|------|
-| 100 | 1,000 | 2,142 msg/s | 0.08s | 4.84ms | 13.05ms | 0% |
-| 500 | 2,000 | 906 msg/s | 0.36s | 19.93ms | 315ms | 0% |
-| 900 | 3,000 | 341 msg/s | 0.73s | 36.36ms | 326ms | 0% |
+| 100 | 1,000 | 11,505 msg/s | 0.15s | 83.10ms | 611.67ms | 0% |
+| 500 | 2,000 | 1,776 msg/s | 0.66s | 205.36ms | 714.23ms | 0% |
+| 900 | 3,000 | 216 msg/s | 1.27s | 454.17ms | 1,134.05ms | 0% |
 
 ## Analysis
 
 ### Scaling Efficiency
 
 $$
-\text{Scaling Efficiency} = \frac{\text{Throughput}_{900} / \text{Throughput}_{100}}{900 / 100} = 1.8\%
+\text{Scaling Efficiency} = \frac{\text{Throughput}_{900} / \text{Throughput}_{100}}{900 / 100} = 0.21\%
 $$
 
 !!! info "Sublinear scaling"
-    1.8% efficiency indicates significant degradation at scale.
+    0.21% efficiency indicates significant degradation at scale.
     Expected for shared-nothing architecture with single connection.
 
 ### Bottlenecks

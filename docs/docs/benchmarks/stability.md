@@ -82,17 +82,17 @@ def test_repeated_recovery_stress(...)
 | Test | Threads | Duration | Iterations | Deadlocks | Errors |
 |------|---------|----------|------------|-----------|--------|
 | chaos_no_deadlock | 50 | 0.16s | 5,000 | **0** | **0** |
-| chaos_with_kills | 50 | 3.07s | 127,449 | **0** | **0** |
-| chaos_with_kills | 20 | 3.05s | 105,274 | **0** | **0** |
-| high_contention | 500 | 0.39s | 5,000 | **0** | **0** |
+| chaos_with_kills | 50 | 24.31s | 9,456 | **0** | **0** |
+| chaos_with_kills | 20 | 9.70s | 2,086 | **0** | **0** |
+| high_contention | 500 | 0.56s | 500 | **0** | **0** |
 
 ### Repeated Recovery Stats
 
 | Metric | Value |
 |--------|-------|
 | Iterations | 1,000 |
-| Recovery P50 | **0.01 ms** |
-| Recovery P99 | **0.02 ms** |
+| Recovery P50 | **0.03 ms** |
+| Recovery P99 | **0.05 ms** |
 | KeyError: None | **0** |
 
 ## KeyError: None Regression Check

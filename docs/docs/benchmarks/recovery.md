@@ -68,9 +68,9 @@ toxic_reset_peer(rabbitmq_proxy, timeout_ms=0)      # then failure
 
 | Metric | Value |
 |--------|-------|
-| Error Detection | -0.67 ms* |
-| Error Propagation | 513.47 ms |
-| Full Recovery | 515.63 ms |
+| Error Detection | -7.35 ms* |
+| Error Propagation | 517.68 ms |
+| Full Recovery | 525.76 ms |
 | Threads Detected | 11/50 |
 | Threads Recovered | 50/50 |
 
@@ -82,9 +82,9 @@ toxic_reset_peer(rabbitmq_proxy, timeout_ms=0)      # then failure
 
 | Metric | Value |
 |--------|-------|
-| Error Detection | 105.31 ms |
-| Error Propagation | 105.83 ms |
-| Full Recovery | 1530.35 ms |
+| Error Detection | 106.01 ms |
+| Error Propagation | 107.12 ms |
+| Full Recovery | 1534.86 ms |
 | Threads Detected | 50/50 |
 | Threads Recovered | 50/50 |
 
@@ -106,8 +106,8 @@ Network Partition:
 
 | Metric | Target | Result |
 |--------|--------|--------|
-| TCP RST Detection | < 10ms | ✅ 0.48ms |
-| Network Partition Detection | < 200ms | ✅ 105ms |
+| TCP RST Detection | < 10ms | ✅ 3.83ms |
+| Network Partition Detection | < 200ms | ✅ 106ms |
 | Full Recovery | < 5s | ✅ 1.5s |
 
 ## Reproduction

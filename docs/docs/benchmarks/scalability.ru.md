@@ -106,9 +106,9 @@ traffic = [
   "height": 300,
   "data": {
     "values": [
-      {"consumers": 100, "throughput": 2142, "latency_p50": 4.84, "latency_p99": 13.05},
-      {"consumers": 500, "throughput": 906, "latency_p50": 19.93, "latency_p99": 315.09},
-      {"consumers": 900, "throughput": 341, "latency_p50": 36.36, "latency_p99": 326.45}
+      {"consumers": 100, "throughput": 11505, "latency_p50": 83.10, "latency_p99": 611.67},
+      {"consumers": 500, "throughput": 1776, "latency_p50": 205.36, "latency_p99": 714.23},
+      {"consumers": 900, "throughput": 216, "latency_p50": 454.17, "latency_p99": 1134.05}
     ]
   },
   "layer": [
@@ -127,9 +127,9 @@ traffic = [
 
 | Consumers | Messages | Throughput | Startup | P50 | P99 | Loss |
 |-----------|----------|------------|---------|-----|-----|------|
-| 100 | 1,000 | 2,142 msg/s | 0.08s | 4.84ms | 13.05ms | 0% |
-| 500 | 2,000 | 906 msg/s | 0.36s | 19.93ms | 315ms | 0% |
-| 900 | 3,000 | 341 msg/s | 0.73s | 36.36ms | 326ms | 0% |
+| 100 | 1,000 | 11,505 msg/s | 0.15s | 83.10ms | 611.67ms | 0% |
+| 500 | 2,000 | 1,776 msg/s | 0.66s | 205.36ms | 714.23ms | 0% |
+| 900 | 3,000 | 216 msg/s | 1.27s | 454.17ms | 1,134.05ms | 0% |
 
 ### Latency Distribution
 
@@ -168,11 +168,11 @@ $$
 $$
 
 $$
-\text{Efficiency} = \frac{341 / 2142}{9} = \frac{0.159}{9} = 0.018 = 1.8\%
+\text{Efficiency} = \frac{216 / 11505}{9} = \frac{0.0188}{9} = 0.0021 = 0.21\%
 $$
 
 !!! info "Sublinear scaling"
-    Эффективность 1.8% указывает на существенную деградацию при масштабировании.
+    Эффективность 0.21% указывает на существенную деградацию при масштабировании.
     Это ожидаемо для shared-nothing архитектуры с одним connection.
 
 ### Bottlenecks

@@ -3,12 +3,12 @@
 Results from the most recent benchmark run.
 
 !!! info "Environment"
-    - **Python:** 3.11.6
-    - **Platform:** Darwin 23.4.0
-    - **Machine:** x86_64
-    - **Git Commit:** `0bfb88d` (dirty)
-    - **Duration:** 286.2s
-    - **Tests Passed:** 42
+    - **Python:** 3.14.2
+    - **Platform:** Darwin 25.5.0
+    - **Machine:** arm64
+    - **Git Commit:** `241f453` (dirty)
+    - **Duration:** 389.2s
+    - **Tests Passed:** 33
     - **Tests Failed:** 0
 
 ## Summary Dashboard
@@ -23,10 +23,10 @@ Results from the most recent benchmark run.
 
 | Configuration | Messages | Duration | Throughput | P50 | P99 |
 |---------------|----------|----------|------------|-----|-----|
-| 10 threads × 100 msg | 1,000 | 0.07s | **14,986 msg/s** | 0.44ms | 3.27ms |
-| 100 threads × 100 msg | 10,000 | 0.52s | **19,157 msg/s** | 3.35ms | 12.88ms |
-| 300 threads × 50 msg | 15,000 | 1.41s | **10,653 msg/s** | 3.80ms | 739ms |
-| 900 threads × 10 msg | 9,000 | 9.11s | **988 msg/s** | 8.22ms | 8.5s |
+| 10 threads × 100 msg | 1,000 | 0.07s | **13,537 msg/s** | 0.08ms | 3.62ms |
+| 100 threads × 100 msg | 10,000 | 0.44s | **22,807 msg/s** | 2.96ms | 7.56ms |
+| 300 threads × 50 msg | 15,000 | 1.27s | **11,815 msg/s** | 3.31ms | 628.51ms |
+| 900 threads × 10 msg | 9,000 | 1.14s | **7,912 msg/s** | 49.93ms | 55.05ms |
 
 ### Throughput Chart
 
@@ -40,8 +40,8 @@ Results from the most recent benchmark run.
 
 | Threads | Operations | Throughput | P99 |
 |---------|------------|------------|-----|
-| 100 threads | 10,000 | **325,309 ops/s** | 0.00ms |
-| 500 threads | 25,000 | **260,867 ops/s** | 47.08ms |
+| 100 threads | 10,000 | **71,044 ops/s** | 2.24ms |
+| 500 threads | 25,000 | **20,739 ops/s** | 518.11ms |
 
 ---
 
@@ -51,9 +51,9 @@ Results from the most recent benchmark run.
 
 | Consumers | Messages | Throughput | Startup | P50 | P99 | Loss |
 |-----------|----------|------------|---------|-----|-----|------|
-| 100 | 1,000 | **2,142 msg/s** | 0.08s | 4.84ms | 13.05ms | 0% |
-| 500 | 2,000 | **906 msg/s** | 0.36s | 19.93ms | 315ms | 0% |
-| 900 | 3,000 | **341 msg/s** | 0.73s | 36.36ms | 326ms | 0% |
+| 100 | 1,000 | **11,505 msg/s** | 0.15s | 83.10ms | 611.67ms | 0% |
+| 500 | 2,000 | **1,776 msg/s** | 0.66s | 205.36ms | 714.23ms | 0% |
+| 900 | 3,000 | **216 msg/s** | 1.27s | 454.17ms | 1,134.05ms | 0% |
 
 ![Consumer Scalability](../assets/images/consumer_scalability.png)
 
@@ -65,19 +65,19 @@ Results from the most recent benchmark run.
 
 | Failure Type | Threads | Detection | Propagation | Full Recovery |
 |--------------|---------|-----------|-------------|---------------|
-| TCP RST | 10 | -3.88ms | 456ms | **515ms** |
-| TCP RST | 50 | -0.67ms | 513ms | **516ms** |
-| Network Partition | 10 | 107ms | 108ms | **1,521ms** |
-| Network Partition | 50 | 105ms | 106ms | **1,530ms** |
-| Latency + Reset | 20 | - | - | **517ms** |
+| TCP RST | 10 | -7.69ms | 457ms | **513ms** |
+| TCP RST | 50 | -7.35ms | 518ms | **526ms** |
+| Network Partition | 10 | 105ms | 105ms | **1,521ms** |
+| Network Partition | 50 | 106ms | 107ms | **1,535ms** |
+| Latency + Reset | 20 | - | - | **523ms** |
 
 ### Network Resilience Summary
 
 | Scenario | Recovery Time |
 |----------|---------------|
-| TCP RST Recovery | **0.48 ms** |
-| Network Partition Recovery | **9.55 ms** |
-| Slow Network Recovery | **1.65 ms** |
+| TCP RST Recovery | **3.83 ms** |
+| Network Partition Recovery | **17.97 ms** |
+| Slow Network Recovery | **5.70 ms** |
 
 ![Recovery Times](../assets/images/recovery_times.png)
 
@@ -90,17 +90,17 @@ Results from the most recent benchmark run.
 | Test | Threads | Duration | Iterations | Deadlocks | Errors |
 |------|---------|----------|------------|-----------|--------|
 | chaos_no_deadlock | 50 | 0.16s | 5,000 | **0** | **0** |
-| chaos_with_kills | 50 | 3.07s | 127,449 | **0** | **0** |
-| chaos_with_kills | 20 | 3.05s | 105,274 | **0** | **0** |
-| high_contention | 500 | 0.39s | 5,000 | **0** | **0** |
+| chaos_with_kills | 50 | 24.31s | 9,456 | **0** | **0** |
+| chaos_with_kills | 20 | 9.70s | 2,086 | **0** | **0** |
+| high_contention | 500 | 0.56s | 500 | **0** | **0** |
 
 ### Repeated Recovery Stress
 
 | Metric | Value |
 |--------|-------|
 | Iterations | 1,000 |
-| Recovery P50 | **0.01 ms** |
-| Recovery P99 | **0.02 ms** |
+| Recovery P50 | **0.03 ms** |
+| Recovery P99 | **0.05 ms** |
 | KeyError: None | **0** |
 
 ---
@@ -117,6 +117,6 @@ All invariants verified:
 
 ---
 
-*Report fingerprint: `fb51e102`*
+*Report fingerprint: `d37a2123`*
 
-*Generated: 2025-12-07T12:48:10*
+*Generated: 2026-07-13T19:57:02*
