@@ -137,9 +137,9 @@ def test_repeated_recovery_stress(...)
 | Тест | Threads | Duration | Iterations | Deadlocks | Errors |
 |------|---------|----------|------------|-----------|--------|
 | chaos_no_deadlock | 50 | 0.16s | 5,000 | 0 | 0 |
-| chaos_with_kills (n=50) | 50 | 3.07s | 127,449 | 0 | 0 |
-| chaos_with_kills (n=20) | 20 | 3.05s | 105,274 | 0 | 0 |
-| high_contention | 500 | 0.39s | 5,000 | 0 | 0 |
+| chaos_with_kills (n=50) | 50 | 24.31s | 9,456 | 0 | 0 |
+| chaos_with_kills (n=20) | 20 | 9.70s | 2,086 | 0 | 0 |
+| high_contention | 500 | 0.56s | 500 | 0 | 0 |
 
 ### Operation Distribution (chaos_no_deadlock)
 
@@ -151,10 +151,10 @@ def test_repeated_recovery_stress(...)
   "height": 200,
   "data": {
     "values": [
-      {"operation": "drain", "count": 1206},
-      {"operation": "connected", "count": 1281},
-      {"operation": "acquire_release", "count": 1309},
-      {"operation": "publish", "count": 1204}
+      {"operation": "drain", "count": 1293},
+      {"operation": "connected", "count": 1216},
+      {"operation": "acquire_release", "count": 1233},
+      {"operation": "publish", "count": 1258}
     ]
   },
   "mark": "arc",
@@ -170,8 +170,8 @@ def test_repeated_recovery_stress(...)
 | Метрика | Значение |
 |---------|----------|
 | Iterations | 1,000 |
-| Recovery P50 | 0.01 ms |
-| Recovery P99 | 0.02 ms |
+| Recovery P50 | 0.03 ms |
+| Recovery P99 | 0.05 ms |
 | KeyError: None | 0 |
 
 ## KeyError: None Regression Check

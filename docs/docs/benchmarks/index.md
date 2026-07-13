@@ -114,10 +114,10 @@ Verifies absence of deadlocks, data loss, and race conditions.
 
 | Metric | Target | Current |
 |--------|--------|---------|
-| Throughput (100 threads) | > 10,000 msg/s | ✅ 19,157 msg/s |
-| Throughput (900 threads) | > 1,000 msg/s | ⚠️ 988 msg/s |
-| Latency P99 | < 50ms | ✅ 12.88ms |
-| TCP RST Recovery | < 10ms | ✅ 0.48ms |
-| Network Partition Recovery | < 100ms | ✅ 9.55ms |
+| Throughput (100 threads) | > 10,000 msg/s | ✅ 22,807 msg/s |
+| Throughput (900 threads) | > 1,000 msg/s | ✅ 7,912 msg/s |
+| Latency P99 | < 50ms | ✅ 7.56ms |
+| TCP RST Recovery | < 10ms | ✅ 3.83ms |
+| Network Partition Recovery | < 100ms | ✅ 17.97ms |
 | Deadlocks | 0 | ✅ 0 |
 | Lost Frames | 0 | ✅ 0 |
