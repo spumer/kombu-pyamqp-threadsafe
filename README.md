@@ -73,16 +73,17 @@ Use same channel to consume from all queues
 
 ## Install
 
-To add and install this package as a dependency of your project, run `poetry add kombu-pyamqp-threadsafe`.
+To add and install this package as a dependency of your project, run `uv add kombu-pyamqp-threadsafe` (or `pip install kombu-pyamqp-threadsafe`).
 
 
 <details>
 <summary>Developing</summary>
 
 - This project follows the [Conventional Commits](https://www.conventionalcommits.org/) standard to automate [Semantic Versioning](https://semver.org/) and [Keep A Changelog](https://keepachangelog.com/) with [Commitizen](https://github.com/commitizen-tools/commitizen).
-- Run `poe` from within the development environment to print a list of [Poe the Poet](https://github.com/nat-n/poethepoet) tasks available to run on this project.
-- Run `poetry add {package}` from within the development environment to install a run time dependency and add it to `pyproject.toml` and `poetry.lock`. Add `--group test` or `--group dev` to install a CI or development dependency, respectively.
-- Run `poetry update` from within the development environment to upgrade all dependencies to the latest versions allowed by `pyproject.toml`.
+- Run `uv sync` to create the development environment (installs the package and the `dev` dependency group).
+- Run `uv run poe` to print a list of [Poe the Poet](https://github.com/nat-n/poethepoet) tasks available to run on this project.
+- Run `uv add {package}` to install a run time dependency and add it to `pyproject.toml` and `uv.lock`. Add `--group dev` or `--group docs` to install a development or docs dependency, respectively.
+- Run `uv lock --upgrade && uv sync` to upgrade all dependencies to the latest versions allowed by `pyproject.toml`.
 - Run `cz bump` to bump the package's version, update the `CHANGELOG.md`, and create a git tag.
 
 </details>

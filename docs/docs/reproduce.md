@@ -20,11 +20,11 @@ Step-by-step guide to running benchmarks and generating reports.
 git clone https://github.com/spumer/kombu-pyamqp-threadsafe.git
 cd kombu-pyamqp-threadsafe
 
-# Install dependencies via Poetry
-poetry install --with test,dev
+# Install dependencies via uv
+uv sync
 
 # Or via pip
-pip install -e ".[test]"
+pip install -e .
 ```
 
 ## Starting Infrastructure
@@ -166,14 +166,11 @@ python scripts/generate_charts.py --output docs/assets/images
 ## Building Documentation
 
 ```bash
-# Install dependencies
-pip install mkdocs-material mkdocs-charts-plugin mkdocs-static-i18n
-
-# Local server
-cd docs && mkdocs serve
+# Local server (dependencies come from the docs dependency group)
+uv run --group docs mkdocs serve -f docs/mkdocs.yml
 
 # Build static site
-cd docs && mkdocs build
+uv run --group docs mkdocs build -f docs/mkdocs.yml
 ```
 
 Documentation will be available at http://localhost:8000

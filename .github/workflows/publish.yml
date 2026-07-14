@@ -8,20 +8,20 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-
+    environment: pypi
+    permissions:
+      id-token: write  # trusted publishing (OIDC), no token needed
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.10"
+          python-version: "3.13"
 
-      - name: Install Poetry
-        run: pip install --no-input poetry
+      - name: Build
+        run: uv build
 
-      - name: Publish package
-        run: |
-          poetry config pypi-token.pypi "${{ secrets.POETRY_PYPI_TOKEN_PYPI }}"
-          poetry publish --build
+      - name: Publish to PyPI
+        run: uv publish

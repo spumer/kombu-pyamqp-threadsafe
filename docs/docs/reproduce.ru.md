@@ -20,11 +20,11 @@
 git clone https://github.com/spumer/kombu-pyamqp-threadsafe.git
 cd kombu-pyamqp-threadsafe
 
-# Установка зависимостей через Poetry
-poetry install --with test,dev
+# Установка зависимостей через uv
+uv sync
 
 # Или через pip
-pip install -e ".[test]"
+pip install -e .
 ```
 
 ## Запуск инфраструктуры
@@ -253,13 +253,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.11'
+          python-version: '3.13'
 
       - name: Install dependencies
-        run: pip install -e ".[test]"
+        run: uv sync
 
       - name: Setup Toxiproxy
         run: |
@@ -267,7 +267,7 @@ jobs:
             -d '{"name": "rabbitmq", "listen": "0.0.0.0:25672", "upstream": "localhost:5672"}'
 
       - name: Run benchmarks
-        run: python scripts/run_benchmarks.py --quick
+        run: uv run python scripts/run_benchmarks.py --quick
 
       - name: Upload report
         uses: actions/upload-artifact@v4
@@ -281,14 +281,11 @@ jobs:
 ### MkDocs
 
 ```bash
-# Установка зависимостей
-pip install mkdocs-material mkdocs-charts-plugin
-
-# Локальный сервер
-cd docs && mkdocs serve
+# Локальный сервер (зависимости берутся из dependency group docs)
+uv run --group docs mkdocs serve -f docs/mkdocs.yml
 
 # Сборка статики
-cd docs && mkdocs build
+uv run --group docs mkdocs build -f docs/mkdocs.yml
 ```
 
 Документация будет доступна на http://localhost:8000
