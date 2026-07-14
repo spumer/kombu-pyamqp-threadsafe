@@ -1,26 +1,8 @@
-## Unreleased
-
-### Feat
-
-- **ThreadSafeChannel**: channel methods reading `self.connection` are now
-  coordinated with connection teardown. A publish (or any other channel
-  operation) racing a concurrent reconnect never observes a half-torn-down
-  connection: it either completes against a stable connection or fails with a
-  recoverable error the caller can retry — never with `AttributeError`.
+## v0.6.4 (2026-07-14)
 
 ### Fix
 
-- **KombuConnection reconnect**: two threads reconnecting the same connection
-  no longer tear down each other's fresh connection (reconnect ping-pong). A
-  thread only tears down the connection its failing attempt actually saw; if
-  another thread already replaced it, the stale teardown is skipped.
-
-### Note
-
-- Tearing a connection down waits briefly (up to `CHANNEL_TEARDOWN_WAIT_S`,
-  default 0.5s) for in-progress channel operations to finish before the
-  connection is released. On timeout it proceeds anyway and logs a warning;
-  affected operations then fail recoverably.
+- **ThreadSafeChannel**: publisher never crashes with AttributeError during reconnect
 
 ## v0.6.3 (2026-05-19)
 
