@@ -68,6 +68,9 @@ repos:
       - id: mypy
         name: mypy
         entry: mypy
+        # mypy is not safe to run concurrently over a shared cache:
+        # parallel batches crash with INTERNAL ERROR on a cold .mypy_cache.
+        require_serial: true
         language: system
         types: [python]
         exclude: ^tests/
