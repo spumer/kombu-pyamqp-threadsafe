@@ -19,6 +19,7 @@ import uuid
 import pytest
 
 import kombu_pyamqp_threadsafe
+from testing import PropagatingThread
 from toxiproxy_client import toxic_timeout
 
 _MGMT_URL = "http://127.0.0.1:15672"
@@ -587,3 +588,74 @@ class TestGracefulBrokerCloseDetection:
         finally:
             with contextlib.suppress(Exception):
                 connection.close()
+
+
+class TestLegacyCloseUnderConcurrentDrain:
+    """Legacy (dedicated_drainer off) close() must return even when another
+    thread is actively parked in drain_events() at the moment it is called.
+
+    ThreadSafeConnection.close() sends Connection.Close and then blocks in
+    drain_events() waiting for CloseOk. If a concurrent thread has already
+    won DrainGuard's start_drain() and is mid-read at that moment, wrapping
+    the wait in the outer _transport_lock inverts lock order against that
+    reader: the reader needs _transport_lock to deliver CloseOk, while
+    close() would be holding it and waiting on the reader instead. Neither
+    side has a timeout -- a permanent circular wait. See the production
+    comment on ThreadSafeConnection.close for the invariant this protects.
+
+    Reproducing the race needs precise timing: the background thread must
+    have won start_drain() and be parked in a blocking read exactly when
+    close() reaches its own CloseOk wait. A single attempt is probabilistic,
+    so this retries independent attempts (fresh connection each time) and
+    fails on the first attempt that does not finish inside the watchdog.
+    """
+
+    CLOSE_WATCHDOG_S = 5.0
+    N_ATTEMPTS = 5
+
+    def test_close_returns_while_a_thread_is_actively_draining(self, rabbitmq_dsn):
+        for attempt in range(self.N_ATTEMPTS):
+            connection = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn, heartbeat=0)
+            connection.connect()
+            conn = connection._connection
+
+            stop_event = threading.Event()
+
+            def consumer_loop(conn=conn, stop_event=stop_event):
+                while not stop_event.is_set():
+                    try:
+                        conn.drain_events(timeout=1.0)
+                    except TimeoutError:
+                        continue
+                    except Exception:
+                        # Connection closing/closed underneath this read once
+                        # close() is in flight -- expected, not a test failure.
+                        return
+
+            consumer_thread = threading.Thread(
+                target=consumer_loop,
+                daemon=True,
+                name=f"legacy-close-consumer-{attempt}",
+            )
+            consumer_thread.start()
+            # Let the consumer win DrainGuard's start_drain() and park in its
+            # blocking read before close() is called on it.
+            time.sleep(0.15)
+
+            closer = PropagatingThread(target=connection.close, daemon=True)
+            closer.start()
+            closer.join(timeout=self.CLOSE_WATCHDOG_S)
+
+            if closer.is_alive():
+                pytest.fail(
+                    f"close() hung on attempt {attempt} while a consumer thread was "
+                    f"draining -- did not return within {self.CLOSE_WATCHDOG_S}s "
+                    "(legacy lock-inversion deadlock)"
+                )
+
+            stop_event.set()
+            consumer_thread.join(timeout=5.0)
+            assert not consumer_thread.is_alive(), (
+                f"consumer thread on attempt {attempt} did not stop after a "
+                "successfully completed close()"
+            )
