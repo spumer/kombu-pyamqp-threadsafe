@@ -71,6 +71,51 @@ Use same channel to consume from all queues
 - To ensure all exceptions raised in expected context we bound channels to threads and dispatch received frames only in their own threads.
 
 
+## Dedicated drainer thread (optional)
+
+By default a connection reads frames off the socket lazily, inside whichever
+application thread happens to call `drain_events()`. Set
+`transport_options={"dedicated_drainer": True}` (default `False`) to give the
+connection its own background thread that owns the socket read instead: it
+polls the transport via `select`, pumps every available frame into the
+connection's buffers, and takes the transport lock only for already-ready
+frames. Publisher threads no longer queue up behind another thread's blocking
+read. See `tests/benchmarks/test_drainer_benchmarks.py` for the publish-latency
+benchmark — in a local run, p99 publish latency with a hanging consumer on the
+same connection dropped from ~2s to low single-digit milliseconds.
+
+**Lifecycle:** the drainer starts at the end of `connect()` and stops in
+`close()`/`collect()`. A kombu reconnect builds a brand new connection, so the
+connection factory explicitly stops the old drainer before handing off to the
+new one.
+
+**Heartbeat:** with the option enabled, the connection ticks its own
+heartbeat at the negotiated interval as part of the same loop — you don't
+need a separate `heartbeat_check`. Without the option, behavior is unchanged.
+
+**Closing:** an intentional `close()`/`collect()` wakes any thread blocked in
+`drain_events()` with `ConnectionClosedIntentionally` (a subclass of amqp's
+`IrrecoverableConnectionError`). kombu's `ensure()`/`Consumer` do **not**
+retry or reconnect on it, since the application closed the connection on
+purpose. A real failure (dropped socket, missed heartbeat) still raises a
+recoverable error and reconnects as usual.
+
+**Things to keep in mind:**
+- Always close connections (`close()`/`collect()`). An unclosed connection
+  with the drainer enabled keeps 2 self-pipe file descriptors open for the
+  life of the process.
+- The drainer does not survive `os.fork()` — recreate the connection in the
+  child process.
+- During the close handshake, publishers can technically still send frames
+  (frames are serialized per-call, so the stream itself never corrupts) —
+  coordinating shutdown with in-flight publishers is the application's
+  responsibility.
+- Any non-connection exception from the drainer's read loop propagates to
+  every thread waiting on `drain_events()` (fail-fast).
+
+This doesn't change **Rule 1**/**Rule 2** above: the drainer only buffers
+frames, dispatch still happens in the thread that owns each channel.
+
 ## Install
 
 To add and install this package as a dependency of your project, run `uv add kombu-pyamqp-threadsafe` (or `pip install kombu-pyamqp-threadsafe`).
