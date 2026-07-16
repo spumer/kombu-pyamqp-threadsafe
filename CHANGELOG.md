@@ -1,3 +1,9 @@
+## v0.7.1 (2026-07-16)
+
+### Fix
+
+- close() deadlock in legacy mode under concurrent drain_events
+
 ## v0.7.0 (2026-07-16)
 
 ### Feat
