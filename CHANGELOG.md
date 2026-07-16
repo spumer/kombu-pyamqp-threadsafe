@@ -1,3 +1,9 @@
+## Unreleased
+
+### Feat
+
+- **transport**: optional dedicated drainer thread (`transport_options={"dedicated_drainer": True}`, default off) — dedicated IO thread owns the socket read via `select` so publishers no longer queue up behind a blocking `drain_events()`; ticks heartbeat itself when enabled; intentional `close()`/`collect()` now signals waiting threads with `ConnectionClosedIntentionally` instead of a retryable error; significantly improves publish p99 latency under a hanging consumer
+
 ## v0.6.4 (2026-07-14)
 
 ### Fix

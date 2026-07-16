@@ -28,6 +28,12 @@ from testing import PropagatingThread
 
 THREAD_TIMEOUT = 5.0  # Longer timeout for integration tests
 
+# Applied via `@pytest.mark.parametrize("connection", DRAINER_MODES,
+# indirect=True, ids=DRAINER_MODE_IDS)` to run a test unmodified against both
+# the legacy DrainGuard path and the dedicated_drainer option.
+DRAINER_MODES = [False, True]
+DRAINER_MODE_IDS = ["legacy", "dedicated_drainer"]
+
 
 # ====================
 # Helper Functions
@@ -59,10 +65,18 @@ def close_transport(connection: kombu_pyamqp_threadsafe.KombuConnection) -> None
 
 
 @pytest.fixture
-def multi_channel_connection(rabbitmq_dsn):
-    """Connection with multiple channels pre-created."""
+def multi_channel_connection(request, rabbitmq_dsn):
+    """Connection with multiple channels pre-created.
+
+    Same indirect-parametrize opt-in as the `connection` fixture in
+    conftest.py: request.param absent means legacy DrainGuard, unchanged.
+    """
+    kwargs = {}
+    if getattr(request, "param", False):
+        kwargs["transport_options"] = {"dedicated_drainer": True}
+
     connection = kombu_pyamqp_threadsafe.KombuConnection(
-        rabbitmq_dsn, default_channel_pool_size=100
+        rabbitmq_dsn, default_channel_pool_size=100, **kwargs
     )
     yield connection
     connection.close()
@@ -88,6 +102,7 @@ class TestSingleChannelRecovery:
         # Next operation should detect closed socket
         assert not connection.connected
 
+    @pytest.mark.parametrize("connection", DRAINER_MODES, indirect=True, ids=DRAINER_MODE_IDS)
     def test_recovery_after_socket_close(self, connection) -> None:
         """Verify connection recovers after socket close."""
         # Establish connection
@@ -108,6 +123,7 @@ class TestSingleChannelRecovery:
         new_channel = connection.default_channel
         assert new_channel.is_usable()
 
+    @pytest.mark.parametrize("connection", DRAINER_MODES, indirect=True, ids=DRAINER_MODE_IDS)
     def test_channel_operations_work_after_recovery(self, connection, queue_name) -> None:
         """Verify channel operations work after recovery."""
         # Establish connection and declare queue
@@ -290,6 +306,7 @@ class TestSelectiveExceptionPropagationRegression:
             f"Worker should NOT receive exception from socket.timeout, got {waiter_exception}"
         )
 
+    @pytest.mark.parametrize("connection", DRAINER_MODES, indirect=True, ids=DRAINER_MODE_IDS)
     def test_no_keyerror_none_after_timeout_false_positive(self, connection, queue_name) -> None:
         """Critical regression test: KeyError: None after timeout false positive.
 
@@ -387,6 +404,9 @@ class TestParallelEnsureRecovery:
     """
 
     @pytest.mark.parametrize("n_threads", [8])
+    @pytest.mark.parametrize(
+        "multi_channel_connection", DRAINER_MODES, indirect=True, ids=DRAINER_MODE_IDS
+    )
     def test_one_socket_close_causes_one_reconnect(
         self, multi_channel_connection, queue_name, n_threads: int, mocker
     ) -> None:

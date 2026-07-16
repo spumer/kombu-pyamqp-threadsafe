@@ -72,10 +72,21 @@ def get_kombu_resource_all_objects(
 
 
 @pytest.fixture
-def connection(rabbitmq_dsn):
+def connection(request, rabbitmq_dsn):
     import kombu_pyamqp_threadsafe
 
-    connection = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn, default_channel_pool_size=1)
+    # Indirect-parametrize opt-in: `@pytest.mark.parametrize("connection", [True],
+    # indirect=True)` runs the test against the dedicated-drainer transport
+    # instead of the legacy DrainGuard path. Unparametrized use (the default
+    # for the whole suite) keeps request.param absent, so behavior here is
+    # byte-for-byte what it was before this option existed.
+    kwargs = {}
+    if getattr(request, "param", False):
+        kwargs["transport_options"] = {"dedicated_drainer": True}
+
+    connection = kombu_pyamqp_threadsafe.KombuConnection(
+        rabbitmq_dsn, default_channel_pool_size=1, **kwargs
+    )
     assert not connection.connected
     yield connection
     connection.close()

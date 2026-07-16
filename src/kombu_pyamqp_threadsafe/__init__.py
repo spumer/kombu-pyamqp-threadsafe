@@ -23,6 +23,15 @@ import kombu.transport.pyamqp
 from amqp import RecoverableConnectionError, spec
 from amqp.exceptions import RecoverableChannelError
 
+from kombu_pyamqp_threadsafe.drainer import (
+    DEDICATED_DRAINER_OPTION,
+    ConnectionDrainer,
+)
+from kombu_pyamqp_threadsafe.drainer import (
+    # Re-exported so users can `except kombu_pyamqp_threadsafe.ConnectionClosedIntentionally`.
+    ConnectionClosedIntentionally as ConnectionClosedIntentionally,
+)
+
 if typing.TYPE_CHECKING:
     from kombu.transport.virtual import Channel
 
@@ -560,6 +569,16 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         )  # channel_id: [frame, frame, ...]
 
         self.channel_thread_bindings[threading.get_ident()].add(self.CONNECTION_CHANNEL_ID)
+
+        # Popped before super().__init__ rather than left in kwargs: passing
+        # it through would just land in amqp.Connection's own unrelated
+        # **kwargs sink (silently ignored there). Popping makes this
+        # attribute the single source of truth for whether a drainer exists.
+        self._dedicated_drainer_enabled = bool(kwargs.pop(DEDICATED_DRAINER_OPTION, False))
+        self._drainer: ConnectionDrainer | None = (
+            ConnectionDrainer(self) if self._dedicated_drainer_enabled else None
+        )
+
         super().__init__(*args, **kwargs)
 
     def channel(self, *args, **kwargs):
@@ -598,9 +617,29 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
     def connect(self, *args, **kwargs):
         with self._transport_lock:
             res = super().connect(*args, **kwargs)
+
+        if self._drainer is not None:
+            # Started outside _transport_lock: in this phase the drainer only
+            # ever takes a bare attribute snapshot of self._transport, never
+            # this lock, so holding it here would just extend contention for
+            # no safety benefit.
+            self._drainer.start()
+
         return res
 
     def close(self, *args, **kwargs):
+        if self._drainer is not None:
+            # In drainer mode the outer _transport_lock must NOT wrap
+            # super().close(): close() sends Connection.Close and then blocks
+            # in drain_events() waiting for CloseOk, but only the drainer
+            # thread reads CloseOk, and it needs _transport_lock to do so.
+            # Holding the lock here would deadlock — the lock owner waits for a
+            # frame the locked-out drainer can never deliver. Writes stay
+            # serialized: the frame_writer wrapper takes _transport_lock per
+            # frame.
+            super().close(*args, **kwargs)
+            return
+
         with self._transport_lock:
             super().close(*args, **kwargs)
 
@@ -616,14 +655,27 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
                 if transport is None:
                     raise OSError("Socket closed")
 
+                # The drainer thread's only write is the heartbeat. On a write
+                # failure it must NOT reach collect(): collect() -> drainer.stop()
+                # from the drainer's own thread is a self-stop (RuntimeError,
+                # aborted teardown), reintroducing the "drainer never calls
+                # collect()" violation on the write side. Skip collect() for the
+                # drainer's own write and surface the error — _tick_heartbeat
+                # routes it to _fail. Application threads (and option off) are
+                # unaffected: they still collect() on a write failure.
+                drainer = self._drainer
+                writer_is_drainer = drainer is not None and drainer.owns_current_thread()
+
                 if not transport.connected:
-                    self.collect()
+                    if not writer_is_drainer:
+                        self.collect()
                     raise OSError("Socket closed")
 
                 try:
                     res = frame_writer(*args, **kwargs)
                 except (OSError, ssl.SSLError):
-                    self.collect()
+                    if not writer_is_drainer:
+                        self.collect()
                     raise
 
             return res
@@ -635,6 +687,14 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
             return super().blocking_read(timeout=timeout)
 
     def collect(self):
+        if self._drainer is not None:
+            # Stopped before the lock, not under it: stop() only touches its
+            # own _lifecycle_lock and joins the drainer thread, never
+            # _transport_lock, so ordering here is about not leaving a
+            # background reader looking at _transport mid-teardown, not
+            # about avoiding a deadlock.
+            self._drainer.stop()
+
         with self._transport_lock:
             super().collect()
 
@@ -676,6 +736,52 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         """
         return dispatched > 0 and timeout is None
 
+    def _drain_into_buffers(self, timeout: float) -> bool:
+        """Read one AMQP method's frames into channel_frame_buff WITHOUT
+        dispatching them. The dedicated drainer thread's only socket read.
+
+        Returns True if a method was read, False if a legacy reader currently
+        holds the socket (contended — uncontended in normal drainer
+        operation). Raises socket.timeout when the socket is dry, and
+        connection_errors / anything unexpected on a fatal error (the drainer
+        routes those to _fail).
+
+        Deliberately does NOT dispatch (unlike _execute_and_finish_drain):
+        dispatching a channel-0 CloseOk/Close fires _on_close_ok/_on_close,
+        which call self.collect(), which stops+joins the drainer — a self-join
+        from the drainer's own thread. Leaving dispatch to app threads keeps
+        teardown single-subject (README Rule 2, fix 2e2cf64) and lets a
+        graceful broker Close surface as a recoverable error in the waiter.
+
+        DrainGuard is reused as the "exactly one reader" invariant guard: in
+        drainer mode the socket has a single reader, so start_drain() is
+        uncontended, but the guard still mutually excludes any stray legacy
+        reader from the socket rather than relying on the GIL. Lock order is
+        the same as the legacy path: DrainGuard, then _transport_lock — held
+        for exactly one drain_events(timeout=0), never longer.
+        """
+        if not self._drain_guard.start_drain():
+            return False
+
+        conn_exc = None
+        try:
+            with self._transport_lock:
+                super().drain_events(timeout=timeout)
+            return True
+
+        except TimeoutError:
+            # Dry socket. socket.timeout is a subclass of OSError (and thus of
+            # connection_errors); catch it FIRST so it is never misclassified
+            # as a connection failure.
+            raise
+
+        except amqp.Connection.connection_errors as exc:
+            conn_exc = exc
+            raise
+
+        finally:
+            self._drain_guard.finish_drain(exc=conn_exc)
+
     def _execute_and_finish_drain(self, timeout: float | None):
         """Execute actual drain from transport, handling all exceptions."""
         conn_exc = None
@@ -713,6 +819,44 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         # When all threads go here only one really drain events,
         # because this action independent of caller.
         # All events will be dispatched to their channels
+
+        drainer = self._drainer
+        if drainer is not None and drainer.should_own_reads:
+            # Dedicated-drainer mode: the drainer thread is the single socket
+            # reader. This thread never reads here — it waits for the drainer
+            # to pump frames, then dispatches from the buffer itself (README
+            # Rule 2: frames dispatched by owner threads, including the
+            # channel-0 Close that triggers teardown).
+            #
+            # Capture the generation BEFORE dispatching: a frame the drainer
+            # pumps between this capture and wait_activity() still advances the
+            # generation, so the wait returns at once instead of missing it
+            # (lost-wakeup / TOCTOU on the buffer).
+            since = drainer.generation
+
+            # Channel-0 control frames (Connection.Close/Blocked/CloseOk) are
+            # dispatched on BOTH paths, including _nodispatch. The drainer only
+            # buffers frames; if a health check (connected -> drain_events(0,
+            # _nodispatch=True)) skipped connection-level dispatch, a graceful
+            # broker Close the drainer already buffered would never surface and
+            # `connected` would report a dead connection as alive. This mirrors
+            # the legacy path, where _execute_and_finish_drain dispatches
+            # channel 0 regardless of _nodispatch. _nodispatch suppresses only
+            # application-channel delivery, never connection control.
+            if _nodispatch:
+                self._dispatch_connection_events()
+            else:
+                dispatched = self._dispatch_pending_events()
+                if self._should_skip_drain_with_pending_events(dispatched, timeout):
+                    return
+
+            drainer.wait_activity(timeout, since_generation=since)
+
+            if _nodispatch:
+                self._dispatch_connection_events()
+            else:
+                self._dispatch_pending_events()
+            return
 
         if not _nodispatch:
             # Dispatch events buffered by previous drain_events(_nodispatch=True) calls
@@ -1122,6 +1266,32 @@ class KombuConnection(kombu.Connection):
 
     def _connection_factory(self):
         with self._transport_lock:
+            # kombu reassigns self._connection here without calling
+            # collect()/close() on the connection being replaced, which happens
+            # on the reconnect paths that skip our collect() (ensure_connection,
+            # lazy default_channel/pool/connection restore). The outgoing
+            # drainer would then orphan and self-terminate, but its self-pipe
+            # fds close only from stop() — leaking 2 fds per reconnect. Snapshot
+            # and stop it here, before building the replacement.
+            #
+            # intentional=False: this is a failure-driven replacement, not a
+            # user close(), so a consumer still parked on the old connection
+            # gets a recoverable error (ensure() reconnects), never
+            # ConnectionClosedIntentionally. old may be None (first connect) or
+            # have no drainer (option off) — getattr covers both.
+            #
+            # Lock order: this holds KombuConnection._transport_lock, then
+            # stop() takes the drainer's _lifecycle_lock (and briefly its
+            # _activity_cond) and joins the old drainer thread. That thread
+            # never takes KombuConnection._transport_lock (it uses the OLD
+            # ThreadSafeConnection's own _transport_lock, a different object),
+            # so there is no lock-order inversion. Stopping before super() also
+            # collapses the old/new drainer coexistence window to zero.
+            old = self._connection
+            old_drainer = getattr(old, "_drainer", None)
+            if old_drainer is not None:
+                old_drainer.stop(intentional=False)
+
             connection = super()._connection_factory()
             return connection
 
