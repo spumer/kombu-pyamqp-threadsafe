@@ -34,6 +34,17 @@ from testing import PropagatingThread
 THREAD_TIMEOUT = 30.0
 OPERATION_TIMEOUT = 2.0  # Timeout for AMQP operations
 
+# Applied via `@pytest.mark.parametrize("toxiproxy_connection,mode_label",
+# DRAINER_MODE_PARAMS, indirect=["toxiproxy_connection"])` to run a test
+# unmodified against both the legacy DrainGuard path and the
+# dedicated_drainer option -- same indirect-parametrize convention as
+# tests/conftest.py's `connection` fixture and bench_throughput.py's
+# DRAINER_MODE_PARAMS.
+DRAINER_MODE_PARAMS = [
+    pytest.param(False, "legacy", id="legacy"),
+    pytest.param(True, "dedicated_drainer", id="dedicated_drainer"),
+]
+
 
 # ====================
 # Recovery Metrics
@@ -93,14 +104,24 @@ class TestRecoveryLatency:
     """
 
     @pytest.fixture
-    def toxiproxy_connection(self, rabbitmq_proxy):
-        """Connection through Toxiproxy on port 25672."""
+    def toxiproxy_connection(self, request, rabbitmq_proxy):
+        """Connection through Toxiproxy on port 25672.
+
+        Indirect-parametrize opt-in, same convention as the `connection`
+        fixture in tests/conftest.py: request.param absent means legacy
+        DrainGuard, unchanged from before this option existed.
+        """
         # Ensure proxy is clean
         rabbitmq_proxy.remove_all_toxics()
+
+        kwargs = {}
+        if getattr(request, "param", False):
+            kwargs["transport_options"] = {"dedicated_drainer": True}
 
         conn = kombu_pyamqp_threadsafe.KombuConnection(
             "amqp://guest:guest@127.0.0.1:25672//",
             default_channel_pool_size=100,
+            **kwargs,
         )
         yield conn
         try:
@@ -110,18 +131,25 @@ class TestRecoveryLatency:
         # Clean up toxics after test
         rabbitmq_proxy.remove_all_toxics()
 
+    @pytest.mark.parametrize(
+        "toxiproxy_connection,mode_label", DRAINER_MODE_PARAMS, indirect=["toxiproxy_connection"]
+    )
     @pytest.mark.parametrize("n_threads", [10, 50])
     def test_recovery_after_reset_peer(
         self,
         toxiproxy_connection,
         add_toxic_reset_peer,
         n_threads: int,
+        mode_label: str,
         benchmark_reporter,
     ) -> None:
         """Measure recovery latency after TCP RST.
 
-        Simulates RabbitMQ crash or network device reset.
-        Workers perform heartbeat operations until failure, then attempt recovery.
+        Simulates RabbitMQ crash or network device reset. Workers perform
+        heartbeat operations until failure, then attempt recovery. Runs
+        against both the legacy DrainGuard path and the dedicated_drainer
+        transport option (mode_label), so the difference is visible in the
+        same run.
         """
         connection = toxiproxy_connection
         timings = RecoveryTimings()
@@ -199,16 +227,17 @@ class TestRecoveryLatency:
         metrics = timings.to_dict()
         metrics["n_threads"] = n_threads
         metrics["failure_type"] = "reset_peer"
+        metrics["mode"] = mode_label
         metrics["n_errors"] = len(error_times)
         metrics["n_recovered"] = len(recovery_times)
 
         benchmark_reporter.record(
             name="recovery_reset_peer",
-            params={"n_threads": n_threads},
+            params={"n_threads": n_threads, "mode": mode_label},
             metrics=metrics,
         )
 
-        print(f"\n=== Reset Peer Recovery (n={n_threads}) ===")
+        print(f"\n=== Reset Peer Recovery (mode={mode_label}, n={n_threads}) ===")
         print(f"Error Detection: {timings.error_detection_latency * 1000:.1f}ms")
         print(f"Error Propagation: {timings.error_propagation_latency * 1000:.1f}ms")
         print(f"Full Recovery: {timings.full_recovery_latency * 1000:.1f}ms")

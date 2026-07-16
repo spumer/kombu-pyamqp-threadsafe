@@ -47,11 +47,24 @@ rabbitmq_available = pytest.mark.skipif(not _rabbitmq_available(), reason="Rabbi
 
 
 @pytest.fixture
-def benchmark_connection(rabbitmq_dsn):
-    """Connection optimized for benchmarking with large pool."""
+def benchmark_connection(request, rabbitmq_dsn):
+    """Connection optimized for benchmarking with large pool.
+
+    Indirect-parametrize opt-in, same convention as the `connection` fixture
+    in tests/conftest.py: `@pytest.mark.parametrize("benchmark_connection",
+    [True], indirect=True)` runs against the dedicated-drainer transport
+    instead of the legacy DrainGuard path. Unparametrized use (the default)
+    keeps request.param absent, so behavior stays byte-for-byte what it was
+    before this option existed.
+    """
+    kwargs = {}
+    if getattr(request, "param", False):
+        kwargs["transport_options"] = {"dedicated_drainer": True}
+
     connection = kombu_pyamqp_threadsafe.KombuConnection(
         rabbitmq_dsn,
         default_channel_pool_size=1000,  # Large pool for stress tests
+        **kwargs,
     )
     yield connection
     connection.close()
