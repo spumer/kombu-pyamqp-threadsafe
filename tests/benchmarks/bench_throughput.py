@@ -30,6 +30,16 @@ from .conftest import rabbitmq_available
 THREAD_TIMEOUT = 60.0  # Longer timeout for throughput tests
 MESSAGE_BODY = b"x" * 100  # 100 byte messages
 
+# Applied via `@pytest.mark.parametrize("benchmark_connection,mode_label",
+# DRAINER_MODE_PARAMS, indirect=["benchmark_connection"])` to run a test
+# unmodified against both the legacy DrainGuard path and the dedicated_drainer
+# option -- same indirect-parametrize convention as tests/conftest.py's
+# `connection` fixture and tests/test_integration_reconnect.py's DRAINER_MODES.
+DRAINER_MODE_PARAMS = [
+    pytest.param(False, "legacy", id="legacy"),
+    pytest.param(True, "dedicated_drainer", id="dedicated_drainer"),
+]
+
 
 # ====================
 # Throughput Metrics
@@ -75,6 +85,9 @@ class TestThroughput:
     """Benchmarks for message throughput."""
 
     @pytest.mark.parametrize(
+        "benchmark_connection,mode_label", DRAINER_MODE_PARAMS, indirect=["benchmark_connection"]
+    )
+    @pytest.mark.parametrize(
         "n_threads,msg_per_thread",
         [
             (10, 100),  # Quick smoke test
@@ -88,12 +101,15 @@ class TestThroughput:
         cleanup_queues,
         n_threads: int,
         msg_per_thread: int,
+        mode_label: str,
         benchmark_reporter,
     ) -> None:
         """Measure publish throughput with concurrent threads.
 
-        Each thread publishes msg_per_thread messages.
-        Measures total throughput and per-message latency.
+        Each thread publishes msg_per_thread messages. Measures total
+        throughput and per-message latency, for both the legacy DrainGuard
+        path and the dedicated_drainer transport option (mode_label), so the
+        difference is visible in the same run.
         """
         connection = benchmark_connection
         queue_name = benchmark_queue_name
@@ -163,6 +179,7 @@ class TestThroughput:
         benchmark_reporter.record(
             name="publish_throughput",
             params={
+                "mode": mode_label,
                 "n_threads": n_threads,
                 "msg_per_thread": msg_per_thread,
                 "message_size": len(MESSAGE_BODY),
@@ -170,7 +187,7 @@ class TestThroughput:
             metrics=metrics,
         )
 
-        print(f"\n=== Publish Throughput (threads={n_threads}) ===")
+        print(f"\n=== Publish Throughput (mode={mode_label}, threads={n_threads}) ===")
         print(f"Messages: {result.total_messages}")
         print(f"Duration: {result.duration_seconds:.2f}s")
         print(f"Throughput: {result.messages_per_second:.1f} msg/s")
