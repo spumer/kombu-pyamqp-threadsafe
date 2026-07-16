@@ -53,6 +53,7 @@ plugins:
             Scalability: Масштабируемость
             Recovery: Восстановление
             Stability: Стабильность
+            Dedicated Drainer: Выделенный дренер
             Results: Результаты
             Latest Results: Последние результаты
             Reproduce: Воспроизведение
@@ -100,6 +101,7 @@ nav:
       - Scalability: benchmarks/scalability.md
       - Recovery: benchmarks/recovery.md
       - Stability: benchmarks/stability.md
+      - Dedicated Drainer: benchmarks/drainer.md
   - Results:
       - Latest Results: results/index.md
   - Reproduce: reproduce.md

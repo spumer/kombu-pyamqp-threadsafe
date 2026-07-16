@@ -43,6 +43,7 @@
 | [Scalability](benchmarks/scalability.md) | Масштабируемость с ростом числа консьюмеров | consumers → throughput |
 | [Recovery](benchmarks/recovery.md) | Время восстановления после сбоев | ms to recovery |
 | [Stability](benchmarks/stability.md) | Отсутствие дедлоков и потерь данных | 0 errors |
+| [Dedicated Drainer](benchmarks/drainer.md) | Опциональный режим с выделенным потоком чтения против легаси-пути | задержка / пропускная способность / восстановление |
 
 ## Быстрый старт
 

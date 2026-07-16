@@ -43,6 +43,7 @@ Comprehensive benchmark suite for evaluating performance and reliability of `kom
 | [Scalability](benchmarks/scalability.md) | Scaling with consumer count | consumers → throughput |
 | [Recovery](benchmarks/recovery.md) | Recovery time after failures | ms to recovery |
 | [Stability](benchmarks/stability.md) | Deadlock and data loss prevention | 0 errors |
+| [Dedicated Drainer](benchmarks/drainer.md) | Optional dedicated-thread drain path vs. legacy | latency / throughput / recovery |
 
 ## Quick Start
 

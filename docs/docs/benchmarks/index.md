@@ -93,6 +93,24 @@ Verifies absence of deadlocks, data loss, and race conditions.
 
 ---
 
+### 5. Dedicated Drainer
+
+Compares the optional `dedicated_drainer` transport option against the
+legacy drain path: publish latency with a stalled consumer, throughput
+parity, recovery speed after a connection reset, and bounded shutdown
+under load.
+
+**What we measure:**
+
+- Publish latency while another thread blocks on `drain_events()`
+- Throughput/latency parity at matched thread counts
+- Error-propagation time to all threads after a TCP reset
+- `close()` outcomes (deadlock vs. bounded completion) under concurrent load
+
+[More details →](drainer.md)
+
+---
+
 ## Test Dependencies
 
 ```
