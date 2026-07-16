@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
+import amqp.exceptions
 import pytest
 
 import kombu_pyamqp_threadsafe
@@ -610,38 +611,63 @@ class TestLegacyCloseUnderConcurrentDrain:
     fails on the first attempt that does not finish inside the watchdog.
     """
 
+    # How long close() gets before we call it deadlocked. Generous versus the
+    # observed post-fix close time (~2s: one CONSUMER_DRAIN_TIMEOUT_S turn
+    # behind the consumer's blocking read plus channel teardown).
     CLOSE_WATCHDOG_S = 5.0
     N_ATTEMPTS = 5
+    # Each blocking read the consumer makes. Long enough that close() almost
+    # certainly lands mid-read (the deadlock window), short enough that a
+    # failed attempt retires quickly.
+    CONSUMER_DRAIN_TIMEOUT_S = 1.0
+    # Delay between starting the consumer and calling close(): lets the
+    # consumer win DrainGuard's start_drain() and park in its blocking read.
+    # Well below CONSUMER_DRAIN_TIMEOUT_S, so close() hits the middle of the
+    # consumer's first read rather than racing its start or its timeout edge.
+    CONSUMER_START_DELAY_S = 0.15
 
     def test_close_returns_while_a_thread_is_actively_draining(self, rabbitmq_dsn):
         for attempt in range(self.N_ATTEMPTS):
-            connection = kombu_pyamqp_threadsafe.KombuConnection(rabbitmq_dsn, heartbeat=0)
+            connection = kombu_pyamqp_threadsafe.KombuConnection(
+                rabbitmq_dsn,
+                heartbeat=0,
+                # Pin the legacy path explicitly: this test must keep
+                # exercising it even if the library's default ever flips.
+                transport_options={"dedicated_drainer": False},
+            )
             connection.connect()
             conn = connection._connection
+            assert conn._drainer is None, "test requires the legacy (no-drainer) path"
 
             stop_event = threading.Event()
+            close_started = threading.Event()
 
-            def consumer_loop(conn=conn, stop_event=stop_event):
+            def consumer_loop(conn=conn, stop_event=stop_event, close_started=close_started):
                 while not stop_event.is_set():
                     try:
-                        conn.drain_events(timeout=1.0)
+                        conn.drain_events(timeout=self.CONSUMER_DRAIN_TIMEOUT_S)
                     except TimeoutError:
                         continue
-                    except Exception:
-                        # Connection closing/closed underneath this read once
-                        # close() is in flight -- expected, not a test failure.
-                        return
+                    except (OSError, amqp.exceptions.ConnectionError):
+                        if close_started.is_set():
+                            # Connection closing/closed underneath this read
+                            # once close() is in flight -- expected, not a
+                            # test failure.
+                            return
+                        # Before close() starts only timeouts are expected; a
+                        # connection error here means the scenario never got
+                        # exercised -- surface it via PropagatingThread.join.
+                        raise
 
-            consumer_thread = threading.Thread(
+            consumer_thread = PropagatingThread(
                 target=consumer_loop,
                 daemon=True,
                 name=f"legacy-close-consumer-{attempt}",
             )
             consumer_thread.start()
-            # Let the consumer win DrainGuard's start_drain() and park in its
-            # blocking read before close() is called on it.
-            time.sleep(0.15)
+            time.sleep(self.CONSUMER_START_DELAY_S)
 
+            close_started.set()
             closer = PropagatingThread(target=connection.close, daemon=True)
             closer.start()
             closer.join(timeout=self.CLOSE_WATCHDOG_S)
