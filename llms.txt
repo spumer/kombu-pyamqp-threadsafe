@@ -1,0 +1,71 @@
+# kombu-pyamqp-threadsafe
+
+> Thread-safe extension of kombu's pyamqp transport. Upstream kombu (pyamqp)
+> is designed "1 thread = 1 connection" with no connection sharing across
+> threads; this package enables "1 thread = 1 channel", allowing one AMQP
+> connection to be shared safely by many threads. It layers thread-safe
+> Connection/Channel/ChannelPool classes over `amqp`/`kombu`, plus an
+> optional dedicated background thread that owns the socket read.
+
+## Architecture
+
+- [Module Hierarchy](llms-full.txt#module-hierarchy)
+  Directory layout of `src/kombu_pyamqp_threadsafe/` (core, drainer,
+  producer, simple), test/benchmark support modules, and the import
+  direction between them.
+- [Data Flow — legacy path](llms-full.txt#data-flow--legacy-path-dedicated_drainerfalse-default)
+  How `drain_events()` reads and dispatches frames when the dedicated
+  drainer is off (default, unchanged behavior).
+- [Data Flow — dedicated drainer thread](llms-full.txt#data-flow--dedicated-drainer-thread-transport_optionsdedicated_drainer-true)
+  ASCII diagram of the self-pipe wakeup, frame buffering without dispatch,
+  the heartbeat ticker, and the `ConnectionClosedIntentionally` signal path
+  when `transport_options={"dedicated_drainer": True}`.
+
+## Key Patterns
+
+- [One reader at a time, dispatch by channel owner](llms-full.txt#one-reader-at-a-time-via-a-guard-dispatch-by-channel-owner-rule-1--2)
+  The core Rule 1 / Rule 2 invariant, enforced by `DrainGuard` (legacy) or
+  `ConnectionDrainer` (dedicated) plus `channel_thread_bindings`.
+- [channel_operation snapshot-then-use](llms-full.txt#channel_operation-snapshot-then-use-around-a-possibly-tearing-down-connection)
+  How every `ThreadSafeChannel` method guards against a concurrent teardown
+  instead of risking an `AttributeError` on a nulled connection.
+- [_transport_lock serializes socket access](llms-full.txt#_transport_lock-serializes-all-socket-access-in-both-modes)
+  The single lock that makes multi-thread publish/read safe, used
+  identically in legacy and dedicated-drainer mode.
+- [Lazy import of Producer/Simple*](llms-full.txt#lazy-import-of-producersimple-to-avoid-cycles)
+  Why `producer.py`/`simple.py` are imported inside `KombuConnection`
+  methods rather than at module top.
+
+## Reference
+
+- [Module Responsibilities](llms-full.txt#module-responsibilities)
+  One-line responsibility per class/module across `__init__.py`,
+  `drainer.py`, `producer.py`, `simple.py`, and test/benchmark support.
+- [Configuration](llms-full.txt#configuration)
+  `transport_options` (including `dedicated_drainer`),
+  `default_channel_pool_size`, debug env var, transport registration
+  helpers (`add_shared_amqp_transport`, `monkeypatch_pyamqp_transport`).
+- [Common Pitfalls](llms-full.txt#common-pitfalls)
+  Channel sharing across threads, self-pipe fd leaks, `os.fork()` safety,
+  reconnect ping-pong, `ConnectionClosedIntentionally` semantics, and the
+  frame-fragmentation CPU-spin fix.
+- [Full Documentation](llms-full.txt)
+  Complete project context — architecture, patterns, module
+  responsibilities, configuration, pitfalls, development commands.
+
+## Development
+
+- [Setup](llms-full.txt#setup)
+  `uv sync`; optional Docker Compose stack (RabbitMQ + Toxiproxy) for
+  integration/benchmark tests.
+- [Commands](llms-full.txt#commands)
+  `uv run poe lint|test|benchmark|fmt|docs`, `cz bump` for releases.
+- [Testing](llms-full.txt#testing)
+  pytest config, RabbitMQ-backed fixtures, indirect parametrization to
+  exercise the dedicated-drainer path, markers, coverage scope.
+
+## Optional
+
+- `project/frameworks/` and `project/research/` hold internal contributor
+  notes (competency frameworks, research); not part of the public API —
+  see [Testing](llms-full.txt#testing) for the pointer in context.

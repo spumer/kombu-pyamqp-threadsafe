@@ -1,0 +1,364 @@
+# kombu-pyamqp-threadsafe
+
+> Thread-safe extension of kombu's pyamqp transport. Upstream kombu (pyamqp)
+> is designed "1 thread = 1 connection" with no connection sharing across
+> threads; this package enables "1 thread = 1 channel", allowing one AMQP
+> connection to be shared safely by many threads (e.g. one producer thread
+> and one consumer thread on the same connection). It layers thread-safe
+> Connection/Channel/ChannelPool classes over `amqp`/`kombu`, plus an
+> optional dedicated background thread that owns the socket read.
+
+Tech Stack: Python >=3.10 (tested 3.10-3.14), kombu >=5.6.1,<6 (pyamqp
+transport, built on the `amqp` library), uv (build backend `uv_build`,
+package manager), pytest + pytest-xdist for tests, ruff for lint/format,
+mypy 1.x for typing, pre-commit + commitizen for commit/release hygiene,
+RabbitMQ (via Docker) for integration tests, Toxiproxy for fault-injection
+benchmarks.
+
+## Architecture
+
+### Module Hierarchy
+
+```
+src/
+  kombu_pyamqp_threadsafe/
+    __init__.py     # Core: ThreadSafeChannel, ThreadSafeChannelPool,
+                     #   ThreadSafeConnection, KombuConnection,
+                     #   Shared*Transport, monkeypatch/registration helpers
+    drainer.py       # ConnectionDrainer, ConnectionClosedIntentionally,
+                     #   DEDICATED_DRAINER_OPTION (optional dedicated IO thread)
+    producer.py       # AutoChannelReleaseProducer (kombu.Producer subclass)
+    simple.py          # SimpleQueue/SimpleBuffer with a race-safe .get()
+  testing.py         # PropagatingThread (re-raises thread exceptions on join)
+  toxiproxy_client.py # Minimal stdlib Toxiproxy HTTP client, used by benchmarks
+  bench_metrics.py    # Latency/metrics collection helpers for benchmarks
+  sentry_stacktrace_formatter.py  # Sentry event formatter (standalone utility)
+tests/
+  test_*.py                  # Unit/integration tests (require RabbitMQ; see conftest)
+  test_connection_drainer.py # ConnectionDrainer unit tests against a fake socket
+  test_drainer_integration.py, test_drainer_reconnect.py  # Drainer + real broker
+  benchmarks/                # pytest-benchmark-style perf/fault-injection suite
+    fixtures/                # toxiproxy + metrics pytest fixtures
+project/
+  frameworks/, research/     # Internal competency notes / research docs, not part
+                              # of the library's public API or runtime behavior
+```
+
+Dependency direction: `kombu_pyamqp_threadsafe/__init__.py` is the core —
+`producer.py` and `simple.py` are imported lazily from `KombuConnection`
+methods (`Producer()`, `SimpleQueue()`, `SimpleBuffer()`) to avoid import
+cycles. `drainer.py` is imported eagerly by `__init__.py` and depends only
+on the standard library plus `amqp` exception types — it has no import-time
+dependency back on `__init__.py` (only a `TYPE_CHECKING`-only reference to
+`ThreadSafeConnection`), so the drainer can be reasoned about in isolation.
+`testing.py`, `bench_metrics.py`, `toxiproxy_client.py` are test/benchmark
+support, not shipped as part of the library's public surface.
+
+### Data Flow — legacy path (dedicated_drainer=False, default)
+
+Any application thread calling `drain_events()` becomes the (temporary)
+socket reader: `DrainGuard` ensures only one thread reads the socket at a
+time (others wait on a condition variable for that read to finish), then
+`ThreadSafeConnection._execute_and_finish_drain` performs the actual
+`amqp.Connection.drain_events()` under `_transport_lock` and dispatches
+channel-0 (connection-level) events immediately. Frames for other channels
+land in `channel_frame_buff[channel_id]` via `on_inbound_method` and are
+dispatched only to the thread that owns that channel
+(`channel_thread_bindings`), never cross-thread.
+
+### Data Flow — dedicated drainer thread (transport_options={"dedicated_drainer": True})
+
+A single background thread (`ConnectionDrainer`) becomes the connection's
+only socket reader for its whole life. Application threads never read the
+socket in this mode; they block on an activity generation counter until the
+drainer has buffered something for them to dispatch.
+
+```
+                     ConnectionDrainer thread                      Application thread(s)
+                     (owns_current_thread==True)                   (Producer / Consumer / drain_events())
+
+  stop() from any    ---write 1 byte--->  self-pipe (_wakeup_w)
+  other thread                                  |
+                                                 v
+                                        selectors.select([conn_sock,
+                                                           wakeup_r], timeout)
+                                                 |
+                       +-------------------------+-------------------------+
+                       | wakeup_r fired           | conn_sock readable      |
+                       | -> stop, exit loop        | -> _drain_until_dry()   |
+                       v                          v
+                _terminate()             read one AMQP method via
+                (wakes ALL waiters,       conn._drain_into_buffers()
+                 sets _terminated)        (DrainGuard + _transport_lock,
+                                            single reader invariant)
+                                                 |
+                                                 v
+                                     buffer into conn.channel_frame_buff
+                                     [channel_id]  (NO dispatch here)
+                                                 |
+                                                 v
+                                        _notify_activity()
+                                     (bump _generation, condvar.notify_all)
+                                                                        |
+                                                                        v
+                                                          drain_events() thread was
+                                                          blocked in wait_activity(),
+                                                          wakes on generation change
+                                                                        |
+                                                                        v
+                                                          dispatch its own buffered
+                                                          frames itself (channel owner
+                                                          thread dispatches — Rule 2)
+
+  heartbeat ticker (same loop, interleaved with select):
+    next_hb_at due -> _tick_heartbeat() -> conn.heartbeat_tick() under
+    _transport_lock -> on ConnectionForced/OSError -> _fail(exc)
+
+  fatal error path (socket error, heartbeat failure, unexpected crash):
+    _fail(exc) stores exc, conn.mark_for_teardown(), notifies waiters (no
+    generation bump) -> every wait_activity() re-raises the same exc
+
+  intentional close path (application close()/collect()):
+    KombuConnection.collect() -> ThreadSafeConnection.collect() ->
+    drainer.stop(intentional=True) -> _intentional_stop=True BEFORE waking
+    -> self-pipe write -> loop exits -> _terminate() -> any thread parked in
+    wait_activity() raises ConnectionClosedIntentionally (NOT retried by
+    kombu's ensure()/Consumer, unlike a recoverable error)
+```
+
+Key invariant carried over from the legacy path: the drainer only buffers
+frames — it never dispatches, and never calls `collect()`/reconnects
+itself. Dispatch still happens exactly where it always did (the thread that
+owns the channel), and only an application thread ever drives teardown or
+reconnect. This keeps **Rule 2** (see Key Patterns) intact and avoids the
+drainer's own thread trying to join itself during teardown.
+
+## Key Patterns
+
+### One reader at a time via a guard, dispatch by channel owner (Rule 1 & 2)
+
+Every read path — legacy `DrainGuard` or the dedicated drainer's
+`_drain_into_buffers` — funnels through a single-reader gate, and every
+dispatch happens only in the thread that owns the channel
+(`channel_thread_bindings`). This is why `queue_declare(passive=True)`
+failures surface as an exception in the *calling* thread, not a random
+other thread reading the socket at the time.
+
+```python
+# src/kombu_pyamqp_threadsafe/__init__.py — ThreadSafeConnection.on_inbound_method
+def on_inbound_method(self, channel_id, method_sig, payload, content):
+    if self.channels is None:
+        raise amqp.exceptions.RecoverableConnectionError("Connection already closed")
+    # collect all frames to late dispatch (after drain) — never dispatch here
+    self.channel_frame_buff[channel_id].append((method_sig, payload, content))
+```
+
+### channel_operation: snapshot-then-use around a possibly-tearing-down connection
+
+Any `ThreadSafeChannel` method that touches `self.connection` (publish,
+`basic_ack`, `queue_declare`, ...) wraps the call in `channel_operation`
+(`ChannelOperation`/`ChannelCoordinator`). It takes one connection snapshot,
+registers as an "active operation" so a concurrent `collect()` will wait for
+it (up to `CHANNEL_TEARDOWN_WAIT_S`), and raises a `RecoverableConnectionError`
+fast if teardown already started — never an `AttributeError` on a nulled
+connection. Used across every AMQP method wrapper in `ThreadSafeChannel`
+(`basic_publish`, `basic_get`, `queue_declare`, `exchange_declare`, ...).
+
+```python
+# src/kombu_pyamqp_threadsafe/__init__.py — pattern used by every channel method
+def queue_declare(self, *args, **kwargs):
+    with channel_operation(self):
+        return super().queue_declare(*args, **kwargs)
+```
+
+### `_transport_lock` serializes all socket access, in both modes
+
+`ThreadSafeConnection.frame_writer`, `blocking_read`, `connect`, `close`,
+and the dedicated drainer's `_drain_into_buffers`/`_tick_heartbeat` all take
+`_transport_lock` around the actual socket call. This is what makes
+"1 connection, N threads" safe: writes are serialized per-call regardless
+of which thread or mode is publishing, and a `KombuConnection`-level
+`_transport_lock` additionally guards lazy transport/channel/pool creation
+(`transport`, `default_channel`, `default_channel_pool` properties).
+
+### Lazy import of Producer/Simple* to avoid cycles
+
+`KombuConnection.Producer()`, `SimpleQueue()`, `SimpleBuffer()` import
+`producer.py`/`simple.py` inside the method body rather than at module
+top, keeping `__init__.py` free of a circular import while still using the
+thread-safe connection everywhere.
+
+## Module Responsibilities
+
+- `ThreadSafeChannelPool` (`__init__.py`) → pool of `ThreadSafeChannel`, reassigns channel ownership to the acquiring thread on `acquire()`
+- `ThreadSafeChannel` (`__init__.py`) → per-thread-bound `kombu.transport.pyamqp.Channel`; every socket-touching method wrapped in `channel_operation`
+- `DrainGuard` (`__init__.py`) → legacy-path single-reader gate: one thread drains, others wait on a condition variable and inherit its result/exception
+- `ChannelCoordinator` / `ChannelOperation` (`__init__.py`) → tracks in-flight per-channel operations so `collect()` can wait for them to drain before nulling the connection
+- `ThreadSafeConnection` (`__init__.py`) → `amqp` Connection subclass; buffers inbound frames per channel, owns `_transport_lock`, starts/stops the optional `ConnectionDrainer`, branches `drain_events()` between legacy and drainer mode
+- `KombuConnection` (`__init__.py`) → public `kombu.Connection` subclass; thread-safe `transport`/`connected`/`default_channel`/`default_channel_pool`, forked `ensure()` that avoids reconnect ping-pong, `_connection_factory()` that stops the outgoing drainer before building a replacement
+- `SharedPyamqpTransport` / `SharedPyamqpSSLTransport` (`__init__.py`) → transports whose `Connection` class is `ThreadSafeConnection`; registered under `shared+pyamqp`/`shared+amqp`/`shared+amqps` via `add_shared_amqp_transport()`, or applied globally via `monkeypatch_pyamqp_transport()`
+- `ConnectionDrainer` (`drainer.py`) → optional dedicated background thread; single socket reader when enabled, self-pipe wakeup, frame buffering (no dispatch), own heartbeat ticker, terminal-state signalling to waiters
+- `ConnectionClosedIntentionally` (`drainer.py`) → `amqp.exceptions.IrrecoverableConnectionError` subclass raised to `drain_events()` waiters on an intentional close, so kombu's `ensure()`/`Consumer` do not retry/reconnect
+- `AutoChannelReleaseProducer` (`producer.py`) → `kombu.Producer` that releases its channel back to the pool on `revive()`/`release()`
+- `SimpleQueue` / `SimpleBuffer` (`simple.py`) → `kombu.simple` variants whose `.get()` re-checks an internal buffer on `Empty` to avoid losing a message raced in from another thread
+- `PropagatingThread` (`testing.py`) → `threading.Thread` that re-raises the target's exception when joined; used throughout the test suite for background threads
+- `ToxiproxyClient` (`toxiproxy_client.py`) → stdlib-only HTTP client for the Toxiproxy fault-injection server, used by `tests/benchmarks/`
+- `bench_metrics.py` → `LatencyMetrics`/`MetricsCollector`/`BenchmarkReporter` used by the benchmark suite to collect and report latency stats
+
+## Configuration
+
+Connections are constructed like a normal `kombu.Connection`, via
+`kombu_pyamqp_threadsafe.KombuConnection(url, **kwargs)` or
+`KombuConnection.from_kombu_connection(existing_connection)`.
+
+`transport_options` (passed through to `kombu.Connection`) supports:
+
+- `dedicated_drainer` (bool, default `False`) — enables the dedicated
+  drainer thread described above. Backward compatible: omitted or falsy
+  reproduces the pre-existing legacy behavior byte-for-byte. Read by
+  `ThreadSafeConnection.__init__` via `DEDICATED_DRAINER_OPTION` and popped
+  from kwargs before calling `super().__init__()`, so it never leaks into
+  `amqp.Connection`'s own kwargs.
+
+`KombuConnection(default_channel_pool_size=100, ...)` — size of the lazily
+created `default_channel_pool` (a `ThreadSafeChannelPool`).
+
+Environment variables (test-only, read by `tests/conftest.py`):
+`PYTEST_RABBITMQ_USER`/`PASS`/`HOST`/`PORT` — RabbitMQ connection for the
+test suite (defaults `guest`/`guest`/`127.0.0.1`/`5672`).
+`KOMBU_PYAMQP_THREADSAFE_DEBUG` — when truthy (`1`/`true`/`t`/`y`/`yes`),
+wraps internal locks in `LoggingLock` to log acquire/release timing and
+flag slow ("STUCK") acquisitions; off by default.
+
+To register the transport under a URL scheme, call
+`kombu_pyamqp_threadsafe.add_shared_amqp_transport()` once at startup
+(adds `shared+pyamqp`/`shared+amqp`/`shared+amqps` to
+`kombu.transport.TRANSPORT_ALIASES`), or
+`monkeypatch_pyamqp_transport()` to replace kombu's default pyamqp
+transport globally instead of using a new scheme.
+
+## Common Pitfalls
+
+**Sharing a channel across threads.** Responses are channel-bound; a
+different thread calling into a shared `default_channel` can receive a
+response or exception meant for another thread. Solution: never use
+`default_channel` from multiple threads — use `default_channel_pool` and
+acquire one channel per thread.
+
+**Passive `queue_declare` closing the channel from an unexpected thread.**
+If a channel is (incorrectly) shared, a passive-declare failure closing the
+channel can surface in whatever thread happened to be draining at the time.
+Solution: channels are bound to their owning thread
+(`channel_thread_bindings`) and frames are only dispatched to that thread —
+follow Rule 1/Rule 2 and this class of bug cannot occur.
+
+**Leaked self-pipe file descriptors with the dedicated drainer.** An
+unclosed connection with `dedicated_drainer=True` keeps 2 file descriptors
+(the self-pipe) open for the life of the process. Solution: always call
+`close()`/`collect()` on connections you are done with.
+
+**Dedicated drainer and `os.fork()`.** The drainer thread does not survive
+a fork — a forked child inherits a `Thread` object whose `is_alive()` may
+still report `True` even though no real thread exists in the child
+(`ConnectionDrainer.is_running` guards against this via a pid check, but
+the drainer itself is not usable post-fork). Solution: recreate the
+connection in the child process after forking.
+
+**Reconnect ping-pong / stale-error collect().** Upstream kombu's `ensure()`
+unconditionally calls `collect()` on any recoverable connection error, which
+can tear down a connection another thread already replaced. `KombuConnection.ensure()`
+is a fork of kombu's implementation that snapshots `self._connection` before
+calling `fun` and only collects if the connection is still the one that saw
+the error.
+
+**Confusing `ConnectionClosedIntentionally` with a real failure.** With the
+dedicated drainer, an application-initiated `close()`/`collect()` raises
+`ConnectionClosedIntentionally` (an `IrrecoverableConnectionError`) to any
+thread blocked in `drain_events()`, and kombu's `ensure()`/`Consumer` will
+NOT retry or reconnect on it — this is intentional. A genuine failure
+(dropped socket, missed heartbeat) still raises a recoverable error and
+reconnects as usual. Code that broadly catches `amqp` connection errors and
+retries should be aware this one exception type is deliberately excluded
+from `recoverable_connection_errors`.
+
+**Busy-spinning on a fragmented frame body.** A blocking read with
+`timeout=0` makes `amqp`'s `TCPTransport._read` spin at ~100% CPU while a
+frame body trickles in over multiple TCP segments. The drainer avoids this
+by using a small non-zero `_DEFAULT_READ_TIMEOUT_S` (0.1s) for
+`_drain_into_buffers`, so a mid-frame stall blocks on `recv` (CPU idle) and
+raises `socket.timeout` instead — `read_frame` re-prepends any partial
+bytes, so no data is lost.
+
+## Development
+
+### Setup
+
+```
+uv sync
+```
+Installs the package plus the `dev` dependency group (pytest, ruff, mypy,
+pre-commit, commitizen, etc.). Add `--group docs` for the mkdocs-based docs
+toolchain. Requires Python >=3.10 (CI matrix: 3.10-3.14).
+
+Integration/benchmark tests need a real RabbitMQ (and, for fault-injection
+benchmarks, Toxiproxy in front of it):
+```
+docker compose -f docker-compose.test.yml up -d
+```
+exposes AMQP through Toxiproxy on `5672`, the Toxiproxy HTTP API on `8474`,
+and the RabbitMQ management UI on `15672`. Point tests at it with
+`PYTEST_RABBITMQ_HOST`/`PYTEST_RABBITMQ_PORT` (defaults assume
+`127.0.0.1:5672` with `guest`/`guest`).
+
+### Commands
+
+All via `uv run poe <task>` (Poe the Poet; run `uv run poe` alone for the
+full list):
+
+- `uv run poe lint` — runs `pre-commit run --all-files` (ruff check/format,
+  mypy, commitizen commit-msg check, uv lock check, misc pygrep/file hooks)
+- `uv run poe test` — `coverage run` (pytest under coverage) + `coverage
+  report` + `coverage xml`; equivalent to `pytest` alone but with coverage
+  wrapping (see `[tool.coverage.run] command_line = "--module pytest"`)
+- `uv run poe benchmark` — `pytest -m benchmark tests/benchmarks/`
+- `uv run poe fmt` — `ruff check --fix-only` + `ruff format`
+- `uv run poe docs` — generates API docs via `pdoc`
+- `cz bump` — bumps version, updates `CHANGELOG.md`, tags the release
+  (Conventional Commits + Commitizen + SemVer + Keep a Changelog)
+
+Raw pytest also works directly: `uv run pytest` (default `addopts` in
+`pyproject.toml` excludes benchmark tests via `-m 'not benchmark'`,
+enables `--exitfirst --failed-first`, doctest-modules, and writes
+`reports/pytest.xml`).
+
+### Testing
+
+- `pythonpath = ["src"]`, `testpaths = ["src", "tests"]` — tests can import
+  `kombu_pyamqp_threadsafe`, `testing`, `bench_metrics`, `toxiproxy_client`
+  directly.
+- Most tests require a live RabbitMQ (`tests/conftest.py` fixtures:
+  `rabbitmq_dsn`, `connection`, `queue_name`); CI spins up
+  `rabbitmq:3.12` as a service container.
+- The `connection` fixture supports indirect parametrization to opt into
+  the dedicated-drainer transport instead of the legacy path:
+  `@pytest.mark.parametrize("connection", [True], indirect=True)` — this is
+  how the same test bodies (e.g. `test_drainer_reconnect.py`) exercise both
+  code paths without duplication.
+- `tests/test_connection_drainer.py` unit-tests `ConnectionDrainer` against
+  a fake socket-pair transport (`FakeTransport`) — no broker needed.
+  `tests/test_drainer_integration.py` / `test_drainer_reconnect.py` exercise
+  it against a real broker.
+- Markers: `benchmark` (deselected by default, run explicitly with `-m
+  benchmark`), `slow`, `stress`.
+- `tests/benchmarks/` holds latency/throughput/fragmentation/reconnect
+  benchmarks and Toxiproxy-based fault-injection tests; not part of the
+  default test run.
+- Coverage config (`pyproject.toml`) measures `src/` only, excluding
+  `bench_metrics.py`, `toxiproxy_client.py`, `testing.py`.
+
+The repo also tracks internal planning/competency notes under
+`project/frameworks/` and `project/research/` (an internal knowledge base
+for contributors); these are not part of the library's public API.
+
+---
+*Generated by documentation-keeper on 2026-07-15, based on commit `e5862b7` (docs(project): add DPF competency frameworks and kombu Hub research)*
