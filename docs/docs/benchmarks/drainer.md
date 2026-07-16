@@ -97,23 +97,24 @@ an active publisher both still running, 10 fresh connections per mode.
 
 | Mode | Completed | Deadlocks | P50 | P95 |
 |------|-----------|-----------|-----|-----|
-| Legacy | 0/10 | 10/10 | — | — |
+| Legacy | 10/10 | 0/10 | 1952 ms | 1990 ms |
 | `dedicated_drainer` | 10/10 | 0/10 | 508 ms | 513 ms |
 
-!!! danger "Legacy mode deadlocks here, not just slows down"
-    In legacy mode, `close()` holds the transport lock for its entire wait
-    on the broker's `CloseOk` reply. If a background consumer's blocking
-    read is in flight at that exact moment, it's waiting on the same lock
-    to do its own read — a circular wait, confirmed with thread dumps in
-    this benchmark. This is a long-standing property of the legacy path;
-    this benchmark is the first time it's been measured rather than just
-    suspected. `dedicated_drainer` avoids it structurally: `close()` never
-    holds the transport lock across that wait, because the drainer thread
-    (not the caller) does the actual socket read.
+!!! info "Legacy mode used to deadlock here — fixed in v0.7.1"
+    Up to and including v0.7.0, legacy-mode `close()` held the transport
+    lock for its entire wait on the broker's `CloseOk` reply. If a
+    background consumer's blocking read was in flight at that exact
+    moment, it was waiting on the same lock to do its own read — a
+    circular wait, confirmed with thread dumps in this benchmark
+    (legacy deadlocked 10/10 before the fix). The fix mirrors what
+    `dedicated_drainer` always did: `close()` no longer holds the
+    transport lock across that wait, so whichever thread reads the
+    socket can freely deliver `CloseOk`. Legacy is still slower to shut
+    down (the caller waits its turn behind the consumer's blocking
+    read), but it is bounded.
 
-The benchmark asserts zero deadlocks and P95 under 4 seconds for
-`dedicated_drainer`; legacy's deadlock count is reported as this
-benchmark's expected finding, not asserted to be zero.
+The benchmark asserts zero deadlocks for both modes, and P95 under
+4 seconds for `dedicated_drainer`.
 
 Reproduce: `pytest tests/benchmarks/test_drainer_shutdown.py -v -m benchmark`
 
