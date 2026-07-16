@@ -93,6 +93,20 @@ _HEARTBEAT_TICK_RATE = 2
 # silent mid-frame.
 _DEFAULT_READ_TIMEOUT_S = 0.1
 
+# Bound for the drainer's heartbeat WRITE (see _tick_heartbeat). The heartbeat
+# send is the drainer's only socket write, and without a timeout it is a blocking
+# sock.sendall() held under _transport_lock: a peer whose TCP receive window is
+# shut (not reading, kernel send buffer full) makes that sendall block for tens
+# of minutes, wedging publishers and close() while the self-pipe is powerless
+# (this thread is stuck in a write syscall, not in select). The default bound is
+# derived from the negotiated heartbeat so the write must complete within half
+# the liveness window, then clamped to [floor, ceiling]: if an 8-byte heartbeat
+# frame cannot be flushed within that time the connection is effectively dead, so
+# failing beats blocking. Override via the constructor (tests, tuning) — mirrors
+# poll_tick_s / read_timeout_s.
+_DEFAULT_WRITE_TIMEOUT_CEILING_S = 5.0
+_DEFAULT_WRITE_TIMEOUT_FLOOR_S = 1.0
+
 
 class ConnectionDrainer:
     """Owns the background thread for one ThreadSafeConnection.
@@ -110,10 +124,14 @@ class ConnectionDrainer:
         conn: "ThreadSafeConnection",
         poll_tick_s: float = _DEFAULT_POLL_TICK_S,
         read_timeout_s: float = _DEFAULT_READ_TIMEOUT_S,
+        write_timeout_s: "float | None" = None,
     ):
         self._conn = conn
         self._poll_tick_s = poll_tick_s
         self._read_timeout_s = read_timeout_s
+        # None -> derive the heartbeat-write bound from the negotiated heartbeat
+        # (see _resolve_write_timeout). An explicit value overrides that.
+        self._write_timeout_s = write_timeout_s
         self._thread: threading.Thread | None = None
         self._pid: int | None = None
         self._closed = False
@@ -458,6 +476,12 @@ class ConnectionDrainer:
         heartbeat_interval = self._conn.heartbeat
         next_hb_at = time.monotonic() if heartbeat_interval else None
 
+        # Resolved once, alongside heartbeat_interval and for the same reason:
+        # conn.heartbeat is fixed for this drainer's whole life (1:1 lifecycle,
+        # negotiated before start()). None here can only mean heartbeat is off,
+        # in which case _tick_heartbeat is never reached.
+        write_timeout = self._resolve_write_timeout(heartbeat_interval)
+
         while True:
             # Snapshot before use: conn._transport can be reassigned by a
             # concurrent reconnect between this read and a use of it: a local
@@ -505,7 +529,7 @@ class ConnectionDrainer:
                 # Due regardless of whether select() returned on data, the
                 # tick, or a spurious wakeup: heartbeat liveness does not wait
                 # for the socket to have something to read.
-                if not self._tick_heartbeat():
+                if not self._tick_heartbeat(write_timeout):
                     return  # fatal ConnectionForced; _fail already woke waiters
                 next_hb_at = time.monotonic() + heartbeat_interval / 4
 
@@ -514,12 +538,64 @@ class ConnectionDrainer:
             if events and not self._drain_until_dry(sel):
                 return  # fatal error; _fail already woke the waiters
 
-    def _tick_heartbeat(self) -> bool:
+    def _resolve_write_timeout(self, heartbeat_interval: "float | None") -> "float | None":
+        """Bound for the heartbeat write (see _tick_heartbeat).
+
+        An explicit constructor value wins. Otherwise derive it from the
+        negotiated heartbeat — the write must complete within half the liveness
+        window — and clamp to [floor, ceiling]. Returns None when heartbeat is
+        off and no override is set: the ticker never runs, so there is no
+        heartbeat write to bound.
+        """
+        if self._write_timeout_s is not None:
+            return self._write_timeout_s
+        if not heartbeat_interval:
+            return None
+        return min(
+            _DEFAULT_WRITE_TIMEOUT_CEILING_S,
+            max(_DEFAULT_WRITE_TIMEOUT_FLOOR_S, heartbeat_interval / 2),
+        )
+
+    def _tick_heartbeat(self, write_timeout: "float | None" = None) -> bool:
         """Send/check the negotiated heartbeat for one due tick.
 
         _transport_lock is held only for this one call (send_heartbeat, when
         it fires, writes through the same locked frame_writer publishers use
         — same one-call-at-a-time discipline as _drain_into_buffers).
+
+        The heartbeat SEND is bounded by write_timeout via the transport's own
+        having_timeout() — the same scoped-timeout mechanism publishers use in
+        _basic_publish. Without it, send_heartbeat -> frame_writer -> sock.sendall
+        is a blocking write with no timeout: if the peer's TCP receive window is
+        shut (peer not reading, kernel send buffer full), sendall blocks for tens
+        of minutes while _transport_lock is held, wedging publishers and close(),
+        and the self-pipe cannot help (this thread sits in a write syscall, not in
+        select). A write that overruns write_timeout raises socket.timeout
+        (TimeoutError, an OSError subclass), caught below and routed to _fail like
+        any other write failure. (transport.write_timeout is NOT the tool here: it
+        is consumed once at _init_socket via setsockopt(SO_SNDTIMEO); reassigning
+        it after connect does nothing to the live socket. having_timeout is the
+        runtime path.)
+
+        Invariant — the socket-timeout setting here is race-free. having_timeout's
+        settimeout/restore runs entirely under _transport_lock, so it is
+        serialized against publisher writes (which also take the lock), and the
+        socket's only reader is this same drainer thread (reads run sequentially
+        in _loop, never concurrently with this write). The previous timeout is
+        restored in having_timeout's finally before the lock is released, so
+        application writes with timeout=None — which pass through
+        having_timeout(None) untouched — still see the ambient blocking mode:
+        their behavior is byte-for-byte unchanged.
+
+        Invariant — this write-path socket.timeout must NOT be conflated with the
+        read-path TimeoutError in _drain_into_buffers/_drain_until_dry, where a
+        timeout means "socket dry, keep running". Here it means "the write did not
+        complete = the connection is effectively dead"; _tick_heartbeat's own
+        except routes it to _fail, so the two paths never cross.
+
+        Invariant — a partial heartbeat frame left half-written on timeout is safe
+        only because _fail immediately marks the connection for teardown and no
+        further frames are written on it: the stream is abandoned, not resumed.
 
         Returns True to keep the loop running. Returns False on a fatal
         heartbeat error, routed through _fail exactly like a socket read
@@ -527,15 +603,19 @@ class ConnectionDrainer:
         instead of the drainer going quiet with no one told why:
           - ConnectionForced — "too many heartbeats missed" (receive side);
           - OSError — the heartbeat SEND failed (RST/EPIPE that did not flip
-            transport.connected). frame_writer recognises this write is on the
-            drainer's own thread and skips its collect() (which would self-stop
-            the drainer), re-raising the OSError for us to route to _fail here —
-            keeping the "drainer never calls collect()" invariant on the write
-            side too. OSError is recoverable, so ensure() reconnects; the
-            pre-fix path surfaced a RuntimeError instead.
+            transport.connected, or a write that overran write_timeout).
+            frame_writer recognises this write is on the drainer's own thread and
+            skips its collect() (which would self-stop the drainer), re-raising
+            the OSError for us to route to _fail here — keeping the "drainer never
+            calls collect()" invariant on the write side too. OSError is
+            recoverable, so ensure() reconnects; the pre-fix path surfaced a
+            RuntimeError instead.
         """
         try:
-            with self._conn._transport_lock:
+            with (
+                self._conn._transport_lock,
+                self._conn._transport.having_timeout(write_timeout),
+            ):
                 self._conn.heartbeat_tick(rate=_HEARTBEAT_TICK_RATE)
             return True
         except (ConnectionForced, OSError) as exc:

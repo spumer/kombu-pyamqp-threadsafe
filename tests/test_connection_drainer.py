@@ -58,6 +58,24 @@ class FakeTransport:
         with contextlib.suppress(OSError):
             self._peer.close()
 
+    @contextlib.contextmanager
+    def having_timeout(self, timeout):
+        """Mirror amqp transport's scoped-timeout mechanism on the real
+        socketpair sock, so _tick_heartbeat's heartbeat-write bound can be
+        exercised against the fake exactly as against a live transport.
+        """
+        if timeout is None:
+            yield self.sock
+            return
+        prev = self.sock.gettimeout()
+        if prev != timeout:
+            self.sock.settimeout(timeout)
+        try:
+            yield self.sock
+        finally:
+            if timeout != prev:
+                self.sock.settimeout(prev)
+
 
 class FakeConnection:
     """Stands in for ThreadSafeConnection: the drainer reads `_transport`,
@@ -866,6 +884,150 @@ class TestHeartbeatWriteFailure:
         # unlike the RuntimeError the pre-fix collect()/self-stop produced.
         with pytest.raises(OSError):
             d.wait_activity(timeout=1.0, since_generation=since)
+
+
+class TestResolveWriteTimeout:
+    """The bound for the heartbeat write: explicit override wins; otherwise it is
+    derived from the negotiated heartbeat (half the liveness window) and clamped
+    to [floor, ceiling]; None when heartbeat is off (the ticker never runs).
+    """
+
+    def test_explicit_override_wins(self, fake_conn):
+        d = ConnectionDrainer(fake_conn, write_timeout_s=2.5)
+        assert d._resolve_write_timeout(heartbeat_interval=60) == 2.5
+        # Override applies even with heartbeat off (harmless: ticker won't run).
+        assert d._resolve_write_timeout(heartbeat_interval=0) == 2.5
+
+    def test_none_when_heartbeat_off_and_no_override(self, fake_conn):
+        d = ConnectionDrainer(fake_conn)
+        assert d._resolve_write_timeout(heartbeat_interval=0) is None
+
+    def test_derived_and_clamped_from_heartbeat(self, fake_conn):
+        d = ConnectionDrainer(fake_conn)
+        assert d._resolve_write_timeout(60) == 5.0  # heartbeat/2=30, capped at ceiling
+        assert d._resolve_write_timeout(8) == 4.0  # heartbeat/2, within bounds
+        assert d._resolve_write_timeout(1) == 1.0  # heartbeat/2=0.5, raised to floor
+
+
+class TestHeartbeatWriteTimeout:
+    """A heartbeat SEND must be bounded by a write timeout. If the peer's TCP
+    receive window is shut (peer not reading, kernel send buffer full), an
+    unbounded sock.sendall() blocks for many minutes while _transport_lock is
+    held — wedging publishers and close(), with the self-pipe powerless (the
+    thread is stuck in a write syscall, not in select). The drainer bounds the
+    write via the transport's having_timeout() so it fails fast and routes to
+    _fail, exactly like any other write failure.
+    """
+
+    class _WriteConnection(FakeConnection):
+        """Its heartbeat_tick performs a real blocking write on the transport,
+        mirroring send_heartbeat -> frame_writer -> transport.write. Backed by a
+        real transport+socket so the write actually blocks/times out.
+        """
+
+        def __init__(self, transport):
+            super().__init__(transport=transport)
+            self.heartbeat = 60
+            self.tick_calls = 0
+
+        def heartbeat_tick(self, rate=2):
+            self.tick_calls += 1
+            # An 8-byte heartbeat frame; blocks if the send buffer is full,
+            # unless the caller bounded the write with a socket timeout.
+            self._transport.write(b"\x08\x00\x00\x00\x00\x00\x00\xce")
+
+    @staticmethod
+    def _real_transport(sock):
+        import amqp.transport
+
+        transport = amqp.transport.TCPTransport.__new__(amqp.transport.TCPTransport)
+        transport.sock = sock
+        transport.connected = True
+        transport._write = sock.sendall
+        transport._read_buffer = b""
+        return transport
+
+    @staticmethod
+    def _wedged_pair():
+        """A socketpair whose sender's send buffer is already full, so the next
+        blocking sendall() hangs until it either drains (never — the peer never
+        reads) or a write timeout fires.
+        """
+        writer, reader = socket.socketpair()
+        writer.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        reader.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        writer.setblocking(False)
+        with contextlib.suppress(BlockingIOError):
+            while True:
+                writer.send(b"\x00" * 4096)
+        writer.setblocking(True)  # back to blocking: sendall() will now hang
+        return writer, reader
+
+    def test_wedged_heartbeat_write_is_bounded_not_hung(self):
+        writer, reader = self._wedged_pair()
+        conn = self._WriteConnection(self._real_transport(writer))
+        d = ConnectionDrainer(conn, poll_tick_s=1.0)
+        result: dict = {}
+
+        def run_tick():
+            started = time.monotonic()
+            keep = d._tick_heartbeat(write_timeout=0.3)
+            result["elapsed"] = time.monotonic() - started
+            result["keep"] = keep
+
+        # daemon: if the fix is absent the write hangs; the process must not wedge.
+        t = threading.Thread(target=run_tick, daemon=True)
+        try:
+            t.start()
+            t.join(timeout=2.0)
+
+            assert not t.is_alive(), (
+                "heartbeat write hung: an unbounded sendall on a full send "
+                "buffer did not return within 2s (write timeout not applied)"
+            )
+            assert result["elapsed"] < 1.5, (
+                f"write timeout (0.3s) not honored: tick took {result['elapsed']:.2f}s"
+            )
+            assert result["keep"] is False
+            assert isinstance(d._exc, OSError)  # socket.timeout is an OSError
+            assert conn.marked_for_teardown is True
+        finally:
+            # Unblocks a still-hung sendall (RED path) so the daemon can exit.
+            reader.close()
+            writer.close()
+
+    def test_wedged_write_wakes_waiter_recoverable(self):
+        writer, reader = self._wedged_pair()
+        conn = self._WriteConnection(self._real_transport(writer))
+        d = ConnectionDrainer(conn, poll_tick_s=1.0)
+        since = d.generation
+        try:
+            d._tick_heartbeat(write_timeout=0.3)
+            # socket.timeout is an OSError -> recoverable; ensure() reconnects.
+            with pytest.raises(OSError):
+                d.wait_activity(timeout=1.0, since_generation=since)
+        finally:
+            reader.close()
+            writer.close()
+
+    def test_healthy_write_succeeds_and_restores_socket_timeout(self):
+        writer, reader = socket.socketpair()
+        writer.settimeout(None)  # ambient blocking mode, as after _init_socket
+        conn = self._WriteConnection(self._real_transport(writer))
+        d = ConnectionDrainer(conn, poll_tick_s=1.0)
+        try:
+            keep = d._tick_heartbeat(write_timeout=0.3)
+
+            assert keep is True
+            assert d._exc is None
+            assert conn.tick_calls == 1
+            # The scoped write timeout was restored: the socket is back to its
+            # ambient blocking mode, so publisher writes (having_timeout(None),
+            # which never touches the timeout) stay byte-for-byte unaffected.
+            assert writer.gettimeout() is None
+        finally:
+            reader.close()
+            writer.close()
 
 
 class TestFrameWriterDrainerThreadDoesNotCollect:

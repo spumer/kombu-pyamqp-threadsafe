@@ -91,7 +91,11 @@ new one.
 
 **Heartbeat:** with the option enabled, the connection ticks its own
 heartbeat at the negotiated interval as part of the same loop — you don't
-need a separate `heartbeat_check`. Without the option, behavior is unchanged.
+need a separate `heartbeat_check`. The heartbeat write is bounded by a
+short write timeout (derived from the negotiated heartbeat, capped at 5s) so
+a peer whose TCP receive window is shut cannot wedge the transport lock on a
+blocking `sendall`; a timed-out heartbeat write surfaces as a recoverable
+error and reconnects. Without the option, behavior is unchanged.
 
 **Closing:** an intentional `close()`/`collect()` wakes any thread blocked in
 `drain_events()` with `ConnectionClosedIntentionally` (a subclass of amqp's
