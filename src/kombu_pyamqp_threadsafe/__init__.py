@@ -628,20 +628,17 @@ class ThreadSafeConnection(kombu.transport.pyamqp.Connection):
         return res
 
     def close(self, *args, **kwargs):
-        if self._drainer is not None:
-            # In drainer mode the outer _transport_lock must NOT wrap
-            # super().close(): close() sends Connection.Close and then blocks
-            # in drain_events() waiting for CloseOk, but only the drainer
-            # thread reads CloseOk, and it needs _transport_lock to do so.
-            # Holding the lock here would deadlock — the lock owner waits for a
-            # frame the locked-out drainer can never deliver. Writes stay
-            # serialized: the frame_writer wrapper takes _transport_lock per
-            # frame.
-            super().close(*args, **kwargs)
-            return
-
-        with self._transport_lock:
-            super().close(*args, **kwargs)
+        # The outer _transport_lock must NOT wrap super().close(), in either
+        # mode: close() sends Connection.Close and then blocks in
+        # drain_events() waiting for CloseOk, and only the socket reader —
+        # the drainer thread in drainer mode, or whichever thread wins
+        # DrainGuard's start_drain() in legacy mode (possibly close() itself,
+        # possibly a concurrent consumer) — can deliver it, and that reader
+        # needs _transport_lock to do so. Holding the lock here would
+        # deadlock — the lock owner waits for a frame the locked-out reader
+        # can never deliver. Writes stay serialized regardless: the
+        # frame_writer wrapper takes _transport_lock per frame.
+        super().close(*args, **kwargs)
 
     @kombu.transport.pyamqp.Connection.frame_writer.setter
     def frame_writer(self, frame_writer):

@@ -2,10 +2,11 @@
 
 The dedicated_drainer transport option promises a bounded connection.close():
 ConnectionDrainer.stop(join_timeout=2.0) (src/kombu_pyamqp_threadsafe/drainer.py)
-caps how long the drainer thread's join can take. This benchmark checks that
-promise end-to-end, on a connection under realistic concurrent load (an active
-background consumer plus a publisher, both still running when close() is
-called), and compares it against legacy mode.
+caps how long the drainer thread's join can take. Legacy mode (no drainer)
+carries the same promise since the close()-deadlock fix below. This benchmark
+checks both end-to-end, on a connection under realistic concurrent load (an
+active background consumer plus a publisher, both still running when close()
+is called), and compares their latency.
 
 Why close() is bounded in dedicated_drainer mode:
 amqp.Connection.close() sends Connection.Close and waits for CloseOk via
@@ -20,40 +21,43 @@ drainer out of the very read the waiter needs). So the whole close() call is
 bounded by the Close/CloseOk round trip plus that one join, regardless of what
 any other thread sharing the connection is doing.
 
-Why legacy mode is NOT just slower -- it can genuinely deadlock:
-without a drainer, ThreadSafeConnection.close() wraps the ENTIRE close+CloseOk
-wait in `with self._transport_lock: super().close(...)` (see its source). If,
-at the moment close() reaches its internal drain_events(timeout=None) call,
-DrainGuard.start_drain() has just been won by a *different* thread (the
-background consumer, mid-loop), close() falls into
+Why legacy mode used to genuinely deadlock, and how the fix bounds it too:
+before the fix, ThreadSafeConnection.close() wrapped the ENTIRE close+CloseOk
+wait in `with self._transport_lock: super().close(...)`. If, at the moment
+close() reached its internal drain_events(timeout=None) call,
+DrainGuard.start_drain() had just been won by a *different* thread (the
+background consumer, mid-loop), close() fell into
 DrainGuard.wait_drain_finished(timeout=None) -- an unbounded wait on a
 separate condition variable -- while STILL HOLDING _transport_lock (RLock,
 exclusive across threads; wait_drain_finished does not touch it). The
-consumer thread that won start_drain() then tries to acquire that very
+consumer thread that won start_drain() then tried to acquire that very
 _transport_lock to perform its own read (_execute_and_finish_drain) and
-blocks forever. Neither side has a timeout that can break the cycle: the
-consumer's own drain_events(timeout=X) never even reaches its socket read (it
-is stuck acquiring the lock, not inside a bounded recv), and close()'s
-internal wait is unconditionally timeout=None. This was verified directly:
+blocked forever. Neither side had a timeout that could break the cycle: the
+consumer's own drain_events(timeout=X) never even reached its socket read (it
+was stuck acquiring the lock, not inside a bounded recv), and close()'s
+internal wait was unconditionally timeout=None. This was verified directly:
 `faulthandler.dump_traceback_later` on a two-thread repro showed the closing
 thread parked in DrainGuard.wait_drain_finished (__init__.py:442) while the
 consumer thread was blocked acquiring _transport_lock inside
 _execute_and_finish_drain (__init__.py:790) -- a textbook circular wait, not a
-slow-but-eventually-successful call. ThreadSafeConnection.close()'s own
-drainer-mode docstring names this exact deadlock as the reason drainer mode
-does NOT hold the lock across the wait; legacy mode keeps the landmine because
-removing it there is a larger change than this benchmark suite's job.
+slow-but-eventually-successful call. The fix mirrors what drainer mode already
+did: ThreadSafeConnection.close() no longer wraps super().close() in the outer
+_transport_lock in either mode, so whichever thread ends up reading the socket
+-- the consumer here, or close() itself when no consumer is active -- can
+always acquire it and deliver CloseOk. See ThreadSafeConnection.close()'s own
+docstring for the invariant this now protects unconditionally.
 
-Consequently Scenario B (legacy) does not report a clean latency-only story:
-some fraction of legacy runs are expected to deadlock outright. Rather than
-letting a real deadlock hang this benchmark (or the whole `pytest -m
-benchmark` run) forever, close() is called on its own daemon thread and
-joined with a bounded watchdog (CLOSE_WATCHDOG_S); a run that exceeds it is
-counted as a deadlock, not folded into the latency percentiles as if it were
-merely slow. A deadlocked run's connection, sockets and threads are
-permanently wedged and deliberately abandoned (daemon threads only, so the
-process can still exit) -- there is no library-side fix available from this
-test-only change, and reproducing the deadlock IS the point.
+Consequently both modes now report a clean latency-only story: a deadlock in
+either is a regression, not an expected finding. Rather than letting a
+genuine regression hang this benchmark (or the whole `pytest -m benchmark`
+run) forever, close() is still called on its own daemon thread and joined
+with a bounded watchdog (CLOSE_WATCHDOG_S); a run that exceeds it is counted
+as a deadlock, not folded into the latency percentiles as if it were merely
+slow. A deadlocked run's connection, sockets and threads would be permanently
+wedged and are deliberately abandoned (daemon threads only, so the process
+can still exit) -- the watchdog exists purely as a regression guard now, kept
+from when it was needed to make legacy's genuine deadlock survivable to
+measure.
 
 Why the publisher gets its own channel, separate from the one used for
 queue.declare(): the first version of this benchmark shared one channel
@@ -74,24 +78,22 @@ latencies below; it is a fixed per-close() cost in both modes, not something
 either drainer path controls.
 
 Why the background consumer uses a bounded drain_events(timeout=X) loop, not
-drain_events(timeout=None): even though the deadlock above is triggered by
-close()'s own internal unbounded wait (not the consumer's timeout), an
-unbounded consumer read would ALSO hold _transport_lock indefinitely on its
-own and deadlock close() even without racing DrainGuard.start_drain(). A
+drain_events(timeout=None): even a fixed close() would still block forever if
+a consumer's own read blocked forever -- an unbounded consumer read holds
+_transport_lock indefinitely on its own regardless of what close() does. A
 bounded per-call timeout (matching test_drainer_benchmarks.py's
-CONSUMER_DRAIN_TIMEOUT_S) keeps the reproduction to the single, precisely
-diagnosed race above.
+CONSUMER_DRAIN_TIMEOUT_S) keeps this scenario exercising the exact race that
+used to deadlock legacy mode (see above), now as a regression check rather
+than a reproduction.
 
 Runs through the rabbitmq_bench Toxiproxy proxy (127.0.0.1:25672, see
 tests/benchmarks/fixtures/toxiproxy.py) rather than the plain "rabbitmq" proxy
 (5672) other suites use concurrently, so this benchmark does not perturb them.
 No toxics are used -- only the proxy's plain pass-through.
 
-Assertions: dedicated_drainer must never deadlock and must stay under the
-soft p95 ceiling (P95_CEILING_S) -- that is the feature's whole promise, so a
-violation here is a regression. Legacy's deadlock count is reported, not
-asserted to be zero -- it is the expected, diagnosed finding of this
-benchmark, not a test bug.
+Assertions: both dedicated_drainer and legacy must never deadlock and must
+stay under the soft p95 ceiling (P95_CEILING_S) -- a bounded close() is now
+the promise of both modes, so a violation in either is a regression.
 """
 
 import threading
@@ -115,18 +117,19 @@ PUBLISH_INTERVAL_S = 0.01  # publisher keeps publishing while close() is measure
 
 # Timeout for each blocking drain_events() call the background thread makes.
 # Same constant and reasoning as test_drainer_benchmarks.py's
-# CONSUMER_DRAIN_TIMEOUT_S: large enough to reproduce "lock held for the whole
-# blocking read" in legacy mode, bounded so the consumer's OWN read can never
-# be the unbounded side of a deadlock -- see module docstring for the
-# distinct, unconditional deadlock this benchmark actually hits.
+# CONSUMER_DRAIN_TIMEOUT_S: large enough to keep the consumer holding
+# _transport_lock for a whole blocking read at a time (exercising close()
+# against a live reader, the scenario that used to deadlock legacy mode),
+# bounded so the consumer's OWN read can never itself be an unbounded wait --
+# see module docstring for the distinct deadlock this benchmark guards against.
 CONSUMER_DRAIN_TIMEOUT_S = 1.0
 
 THREAD_TIMEOUT = 30.0
 
-# Hard watchdog around the close() call itself (module docstring: legacy mode
-# can enter a genuine, non-resolving circular wait on _transport_lock). Set
-# comfortably above P95_CEILING_S so a merely-slow-but-completing close() is
-# never misclassified as a deadlock, while still failing fast (well under
+# Hard watchdog around the close() call itself -- a regression guard now that
+# both modes promise a bounded close() (module docstring). Set comfortably
+# above P95_CEILING_S so a merely-slow-but-completing close() is never
+# misclassified as a deadlock, while still failing fast (well under
 # THREAD_TIMEOUT) once a run is confirmed stuck rather than waiting out a
 # generous THREAD_TIMEOUT for something that will never resolve.
 CLOSE_WATCHDOG_S = 8.0
@@ -156,6 +159,9 @@ class ShutdownResult:
     latencies holds only completed (non-deadlocked) close() calls -- folding
     a watchdog timeout into the percentiles as if it were merely a slow
     sample would understate how bad a deadlock is and corrupt p50/p95.
+    deadlocks is asserted to be zero for both modes (module docstring); it
+    stays a separate counter, not folded into errors, so a regression here
+    reads as "deadlocked" rather than an ambiguous "errored".
     """
 
     latencies: LatencyMetrics = field(default_factory=LatencyMetrics)
@@ -196,10 +202,11 @@ def _background_drain_loop(conn, stop_event: threading.Event) -> None:
             # Connection closing/closed underneath this read (dedicated_drainer:
             # ConnectionClosedIntentionally; legacy: whatever surfaces once the
             # transport is torn down mid-close) -- expected once a close() is
-            # in flight, not a benchmark failure. On a deadlocked legacy run
-            # this thread instead stays blocked acquiring _transport_lock and
-            # never reaches this except at all (see module docstring); it is
-            # abandoned as a daemon thread by the caller in that case.
+            # in flight, not a benchmark failure. On a deadlocked run (a
+            # regression the module's assertions now catch) this thread
+            # instead stays blocked acquiring _transport_lock and never
+            # reaches this except at all; it is abandoned as a daemon thread
+            # by the caller in that case.
             return
 
 
@@ -230,8 +237,8 @@ def _publisher_loop(
 def _close_with_watchdog(connection: kombu_pyamqp_threadsafe.KombuConnection) -> dict:
     """Call connection.close() on its own daemon thread, bounded by CLOSE_WATCHDOG_S.
 
-    A dedicated thread makes the call (not this one) so a genuine deadlock --
-    confirmed possible in legacy mode, see module docstring -- cannot hang
+    A dedicated thread makes the call (not this one) so a regression -- a
+    close() that hangs in either mode, see module docstring -- cannot hang
     this benchmark: the watchdog join() below always returns. daemon=True so
     a permanently wedged closer thread cannot block process exit.
 
@@ -285,9 +292,9 @@ def _run_shutdown_benchmark(
             # test_drainer_benchmarks.py's own convention).
         )
         stop_event = threading.Event()
-        # daemon=True: on a deadlocked run these threads stay permanently
-        # blocked on _transport_lock (see module docstring) and are
-        # deliberately abandoned rather than joined forever.
+        # daemon=True: on a deadlocked run (a regression, module docstring)
+        # these threads would stay permanently blocked on _transport_lock and
+        # are deliberately abandoned rather than joined forever.
         consumer_thread: PropagatingThread | None = None
         publisher_thread: PropagatingThread | None = None
 
@@ -349,11 +356,13 @@ def _run_shutdown_benchmark(
                 print(
                     f"\n!!! run {i} ({'dedicated_drainer' if dedicated_drainer else 'legacy'}): "
                     f"close() did not return within CLOSE_WATCHDOG_S={CLOSE_WATCHDOG_S}s -- "
-                    "deadlock (see module docstring); connection abandoned."
+                    "deadlock (regression -- both modes are asserted deadlock-free, see "
+                    "module docstring); connection abandoned."
                 )
-                # Do NOT set stop_event / join: the background threads are
-                # blocked acquiring the same lock the closer holds forever
-                # (see module docstring) and will never observe it anyway.
+                # Do NOT set stop_event / join: if this actually happens the
+                # background threads are blocked acquiring the same lock the
+                # closer holds forever (see module docstring) and will never
+                # observe it anyway.
             else:
                 result.errors += 1
                 print(f"\n!!! run {i}: close() raised {outcome['exc']!r}")
@@ -446,12 +455,16 @@ class TestDrainerShutdownLatency:
             f"{P95_CEILING_S}s ceiling"
         )
 
-        # Legacy: only genuinely unexpected exceptions fail the test. Deadlocks
-        # are this benchmark's diagnosed, expected finding (module docstring)
-        # -- reported above, not asserted to be zero.
+        # Legacy: the close()-deadlock fix (module docstring) makes a bounded
+        # close() the promise of this mode too now -- a deadlock here is a
+        # regression, not the expected finding it used to be before the fix.
+        assert legacy_result.deadlocks == 0, (
+            f"legacy close() deadlocked on {legacy_result.deadlocks}/{N_RUNS} runs -- "
+            "the outer _transport_lock must not wrap super().close() in either mode "
+            "(see ThreadSafeConnection.close)"
+        )
         assert legacy_result.errors == 0
-        if legacy_result.latencies.count:
-            assert legacy_result.latencies.p95 < P95_CEILING_S, (
-                f"legacy p95 (completed runs only) {legacy_result.latencies.p95:.3f}s exceeds "
-                f"{P95_CEILING_S}s ceiling"
-            )
+        assert legacy_result.latencies.count == N_RUNS
+        assert legacy_result.latencies.p95 < P95_CEILING_S, (
+            f"legacy p95 {legacy_result.latencies.p95:.3f}s exceeds {P95_CEILING_S}s ceiling"
+        )
