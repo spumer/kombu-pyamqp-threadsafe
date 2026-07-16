@@ -5,7 +5,7 @@ build-backend = "uv_build"
 
 [project]
 name = "kombu-pyamqp-threadsafe"
-version = "0.6.4"
+version = "0.7.0"
 description = "Threadsafe implementation of pyamqp transport for kombu"
 readme = "README.md"
 license = "MIT"

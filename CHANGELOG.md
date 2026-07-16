@@ -1,8 +1,13 @@
-## Unreleased
+## v0.7.0 (2026-07-16)
 
 ### Feat
 
-- **transport**: optional dedicated drainer thread (`transport_options={"dedicated_drainer": True}`, default off) — dedicated IO thread owns the socket read via `select` so publishers no longer queue up behind a blocking `drain_events()`; ticks heartbeat itself when enabled; intentional `close()`/`collect()` now signals waiting threads with `ConnectionClosedIntentionally` instead of a retryable error; significantly improves publish p99 latency under a hanging consumer
+- **transport**: optional dedicated drainer thread
+
+### Fix
+
+- **transport**: bound the drainer heartbeat write with a timeout
+- **pre-commit**: run mypy serially to avoid cache race
 
 ## v0.6.4 (2026-07-14)
 
