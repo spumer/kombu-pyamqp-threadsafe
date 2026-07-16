@@ -62,3 +62,6 @@ __pycache__/
 
 # VS Code
 .vscode/
+
+# Internal feature-process artifacts (plans, review findings) — not part of the library
+project/features/
