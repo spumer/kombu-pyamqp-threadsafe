@@ -84,10 +84,15 @@ read. See `tests/benchmarks/test_drainer_benchmarks.py` for the publish-latency
 benchmark — in a local run, p99 publish latency with a hanging consumer on the
 same connection dropped from ~2s to low single-digit milliseconds.
 
-**Lifecycle:** the drainer starts at the end of `connect()` and stops in
-`close()`/`collect()`. A kombu reconnect builds a brand new connection, so the
-connection factory explicitly stops the old drainer before handing off to the
-new one.
+**Lifecycle:** this is one extra background thread per connection. It starts
+at the end of `connect()` — and since kombu connects lazily, for a
+publish-only connection that means your first publish — and it keeps reading
+the socket and ticking heartbeat until the connection is torn down. `close()`
+works as usual with the drainer running: the drainer delivers the broker's
+`CloseOk` reply, and the thread is stopped and joined as part of
+`close()`/`collect()` — no manual thread management needed. A kombu reconnect
+builds a brand new connection, so the connection factory explicitly stops the
+old drainer before handing off to the new one.
 
 **Heartbeat:** with the option enabled, the connection ticks its own
 heartbeat at the negotiated interval as part of the same loop — you don't
@@ -96,6 +101,14 @@ short write timeout (derived from the negotiated heartbeat, capped at 5s) so
 a peer whose TCP receive window is shut cannot wedge the transport lock on a
 blocking `sendall`; a timed-out heartbeat write surfaces as a recoverable
 error and reconnects. Without the option, behavior is unchanged.
+
+This matters most for publish-only connections. In legacy mode nothing reads
+the socket between publishes: heartbeats are neither sent during idle periods
+nor checked, and a broker-side close goes unnoticed until the next publish
+fails — keeping the connection alive is the caller's job (periodic
+`heartbeat_check()` or someone's `drain_events()`). With the drainer, the
+background thread keeps the connection alive across idle periods and surfaces
+broker-side failures immediately.
 
 **Closing:** an intentional `close()`/`collect()` wakes any thread blocked in
 `drain_events()` with `ConnectionClosedIntentionally` (a subclass of amqp's

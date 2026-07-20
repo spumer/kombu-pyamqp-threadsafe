@@ -140,6 +140,16 @@ Reproduce: `pytest tests/benchmarks/test_drainer_fragmentation.py -v -m benchmar
 With the option enabled, the connection ticks its own heartbeat as part of
 the same drainer loop — no separate `heartbeat_check` call needed.
 
+Note that this means one extra background thread per connection, alive for
+the whole life of the connection: it starts when the connection actually
+connects (for a publish-only connection — on the first publish, since kombu
+connects lazily) and is stopped and joined by `close()`/`collect()`. For
+publish-only connections this is the main practical difference: in legacy
+mode nothing reads the socket between publishes, so heartbeats are neither
+sent nor checked during idle periods and a broker-side close goes unnoticed
+until the next publish fails; with the drainer the connection stays alive on
+its own.
+
 An intentional `close()`/`collect()` wakes any thread blocked in
 `drain_events()` with `ConnectionClosedIntentionally`, so kombu's
 `ensure()`/`Consumer` retry machinery doesn't mistake a deliberate shutdown
